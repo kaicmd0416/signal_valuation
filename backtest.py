@@ -76,7 +76,9 @@ class SignalAnalysis:
                  df_index_comp: pd.DataFrame = None,
                  df_stock: pd.DataFrame = None,
                  df_index_ret: pd.DataFrame = None,
-                 df_calendar: pd.DataFrame = None):
+                 df_calendar: pd.DataFrame = None,
+                 df_st: pd.DataFrame = None,
+                 df_notrade: pd.DataFrame = None):
 
         self.signal_name = signal_name
         self.index_name = index_name
@@ -88,6 +90,8 @@ class SignalAnalysis:
         self.df_stock = df_stock if df_stock is not None else pd.DataFrame()
         self.df_index_ret = df_index_ret if df_index_ret is not None else pd.DataFrame()
         self.df_calendar = df_calendar if df_calendar is not None else pd.DataFrame()
+        self.df_st = df_st if df_st is not None else pd.DataFrame()
+        self.df_notrade = df_notrade if df_notrade is not None else pd.DataFrame()
 
         self.df_factor_merged = pd.DataFrame()
         self.df_holding = pd.DataFrame()
@@ -127,6 +131,28 @@ class SignalAnalysis:
                 gt.next_workday_calculate
             )
         print(f"  指数内因子数据: {len(df_merged)} 条")
+
+        # 剔除ST股票
+        if not self.df_st.empty:
+            n_before = len(df_merged)
+            df_merged = df_merged.merge(
+                self.df_st[["valuation_date", "code"]],
+                on=["valuation_date", "code"],
+                how="left", indicator="_st"
+            )
+            df_merged = df_merged[df_merged["_st"] == "left_only"].drop(columns=["_st"])
+            print(f"  剔除ST股票: {n_before - len(df_merged)} 条, 剩余 {len(df_merged)} 条")
+
+        # 剔除涨跌停（不可交易）股票
+        if not self.df_notrade.empty:
+            n_before = len(df_merged)
+            df_merged = df_merged.merge(
+                self.df_notrade[["valuation_date", "code"]],
+                on=["valuation_date", "code"],
+                how="left", indicator="_notrade"
+            )
+            df_merged = df_merged[df_merged["_notrade"] == "left_only"].drop(columns=["_notrade"])
+            print(f"  剔除涨跌停股票: {n_before - len(df_merged)} 条, 剩余 {len(df_merged)} 条")
 
         self.df_factor_merged = df_merged[["valuation_date", "code", "factor_value"]].copy()
 

@@ -26,7 +26,7 @@ path = os.getenv('GLOBAL_TOOLSFUNC_new')
 sys.path.append(path)
 import global_dic as glv
 
-from data_prepare import load_combine_config, get_factor_data_batch, get_index_component
+from data_prepare import load_combine_config, get_factor_data_batch, get_index_component, get_st_stocks, get_notrade_stocks
 
 
 # ============================================================
@@ -142,6 +142,33 @@ def combine_factors(start_date: str, end_date: str) -> pd.DataFrame:
     df_all_raw = get_factor_data_batch(start_date, end_date, factor_names)
     t_db = time.time() - t0
     print(f"  DB查询完成: {len(df_all_raw)} 条, 耗时 {t_db:.1f}s")
+
+    # --- 步骤2.5: 剔除ST和涨跌停股票 ---
+    print(f"\n加载ST和涨跌停数据...")
+    t0 = time.time()
+    df_st = get_st_stocks(start_date, end_date)
+    df_notrade = get_notrade_stocks(start_date, end_date)
+    n_before = len(df_all_raw)
+
+    if not df_st.empty:
+        df_all_raw = df_all_raw.merge(
+            df_st[["valuation_date", "code"]],
+            on=["valuation_date", "code"],
+            how="left", indicator="_st"
+        )
+        df_all_raw = df_all_raw[df_all_raw["_st"] == "left_only"].drop(columns=["_st"])
+
+    if not df_notrade.empty:
+        df_all_raw = df_all_raw.merge(
+            df_notrade[["valuation_date", "code"]],
+            on=["valuation_date", "code"],
+            how="left", indicator="_notrade"
+        )
+        df_all_raw = df_all_raw[df_all_raw["_notrade"] == "left_only"].drop(columns=["_notrade"])
+
+    n_removed = n_before - len(df_all_raw)
+    print(f"  剔除ST和涨跌停: {n_removed} 条 (ST {len(df_st)} 条, 涨跌停 {len(df_notrade)} 条)")
+    print(f"  剩余: {len(df_all_raw)} 条, 耗时 {time.time()-t0:.1f}s")
 
     factor_data_map = {name: grp for name, grp in df_all_raw.groupby("score_name")}
 

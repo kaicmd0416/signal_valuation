@@ -23,6 +23,7 @@ import global_tools as gt
 from data_prepare import (
     load_config, load_signals_config, load_combine_config,
     get_factor_data, get_index_component, get_market_data, get_trading_calendar,
+    get_st_stocks, get_notrade_stocks,
 )
 from report import generate_report
 from factor_combine import combine_factors
@@ -56,6 +57,14 @@ if __name__ == "__main__":
     df_calendar = get_trading_calendar(START_DATE, mkt_end)
     print(f"交易日历: {len(df_calendar)} 条\n")
 
+    # 2.5 ST股票和涨跌停股票（用于剔除）
+    print("正在获取ST股票数据...")
+    df_st = get_st_stocks(START_DATE, mkt_end)
+    print(f"ST股票: {len(df_st)} 条")
+    print("正在获取涨跌停股票数据...")
+    df_notrade = get_notrade_stocks(START_DATE, mkt_end)
+    print(f"涨跌停股票: {len(df_notrade)} 条\n")
+
     # 3. 指数成分（只取一次）
     print("正在获取指数成分数据...")
     index_data = {}
@@ -83,6 +92,8 @@ if __name__ == "__main__":
             df_stock=df_stock,
             df_index_ret=df_index_ret,
             df_calendar=df_calendar,
+            df_st=df_st,
+            df_notrade=df_notrade,
         )
 
     # 5. 合成因子回测
@@ -105,4 +116,6 @@ if __name__ == "__main__":
             df_stock=df_stock,
             df_index_ret=df_index_ret,
             df_calendar=df_calendar,
+            df_st=df_st,
+            df_notrade=df_notrade,
         )

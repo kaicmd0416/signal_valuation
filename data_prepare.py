@@ -195,6 +195,44 @@ def get_trading_calendar(start_date: str, end_date: str) -> pd.DataFrame:
     return df
 
 
+def get_st_stocks(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    获取ST股票列表
+
+    Returns
+    -------
+    DataFrame[valuation_date, code]
+    """
+    engine = get_engine("market")
+    query = sqlalchemy.text("""
+        SELECT valuation_date, code
+        FROM st_stock
+        WHERE valuation_date BETWEEN :start_date AND :end_date
+    """)
+    params = {"start_date": start_date, "end_date": end_date}
+    df = pd.read_sql(query, engine, params=params)
+    return df
+
+
+def get_notrade_stocks(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    获取涨跌停（不可交易）股票列表
+
+    Returns
+    -------
+    DataFrame[valuation_date, code]
+    """
+    engine = get_engine("market")
+    query = sqlalchemy.text("""
+        SELECT valuation_date, code
+        FROM data_stocknotrade
+        WHERE valuation_date BETWEEN :start_date AND :end_date
+    """)
+    params = {"start_date": start_date, "end_date": end_date}
+    df = pd.read_sql(query, engine, params=params)
+    return df
+
+
 def get_market_data(start_date: str, end_date: str):
     """
     获取行情数据（股票、港股、ETF、期权、期货、可转债、指数）

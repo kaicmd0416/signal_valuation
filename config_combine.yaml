@@ -3,28 +3,27 @@
 # ============================================================
 # direction: 1=正向(因子值越大越好), -1=反向(因子值越小越好)
 # direction_override: 针对特定指数覆盖方向（可选）
-#   例如 RTN1 在大盘(hs300)是正向动量，在小盘(zz1000/zz2000)是反转
 #
-# 入选标准: 综合评分 >= 5 的因子
-# 已剔除: FAT(1), DTA(2), CTA(2), ATER(2), ROE(3), NetProfitTTM(3),
-#   GrossProfitTTM(3), LnFloatCap1(重复), LDTWC(4), RTN12(4), ROA(4), TAT(4)
+# 入选标准: 剔除ST+涨跌停后，综合评分 >= 5 的因子 (共9个)
+# 已剔除: OCFTD(4), GPG(3), OCFPR(3), LnFloatCap(3)
 # ============================================================
 
 method: "equal_weight"   # 合成方式: equal_weight(等权)
 output_name: "combine_1"  # 合成因子名称
+n_groups: 3              # 强制分组数（不设置则自动选择最优分组数）
 
 factors:
-  # --- 流动性/换手率因子 (最强, 评分10/8) ---
+  # --- 流动性/换手率因子 (最强, 评分10/7/7) ---
   - name: "turnoverRateAvg20d"
     direction: 1       # 正向: 高换手 → 高收益 | 评分10
 
   - name: "turnoverRateAvg120d"
-    direction: 1       # 正向 | 评分8
+    direction: 1       # 正向 | 评分7
 
   - name: "ILLIQ"
     direction: -1      # 反向: 低非流动性(高流动性) → 高收益 | 评分7
 
-  # --- 估值因子 (评分8/7/6) ---
+  # --- 估值因子 (评分8/7/7) ---
   - name: "PB"
     direction: 1       # 正向 | 评分8
 
@@ -32,19 +31,9 @@ factors:
     direction: 1       # 正向 | 评分7
 
   - name: "PE"
-    direction: 1       # 正向 | 评分6
+    direction: 1       # 正向 | 评分7
 
-  # --- 盈利质量因子 (评分6/5) ---
-  - name: "OCFPR"
-    direction: 1       # 正向 | 评分6
-
-  - name: "OCFTD"
-    direction: 1       # 正向 | 评分5
-
-  - name: "GPG"
-    direction: 1       # 正向: 高毛利增长 → 高收益 | 评分5
-
-  # --- 动量/反转因子 (大小盘方向不同, 评分7/6/6) ---
+  # --- 动量/反转因子 (大小盘方向不同, 评分7/6/5) ---
   - name: "RTN1"
     direction: -1      # 默认反向(反转效应, 适合中小盘) | 评分7
     direction_override:
@@ -56,10 +45,6 @@ factors:
       hs300: 1
 
   - name: "RTN6"
-    direction: -1      # 默认反向(中小盘反转) | 评分6
+    direction: -1      # 默认反向(中小盘反转) | 评分5
     direction_override:
       hs300: 1         # 沪深300上IC为正
-
-  # --- 市值因子 (评分5) ---
-  - name: "LnFloatCap"
-    direction: -1      # 反向: 小市值效应

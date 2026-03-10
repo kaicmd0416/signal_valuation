@@ -21,9 +21,10 @@ sys.path.append(path)
 import global_dic as glv
 import global_tools as gt
 
-from data_prepare import load_config, load_combine_config, get_index_component, get_market_data, get_trading_calendar
+from data_prepare import load_config, load_combine_config, get_index_component, get_market_data, get_trading_calendar, get_st_stocks, get_notrade_stocks
 from report import generate_report
 from factor_combine import combine_factors
+from factor_group_combine import group_combine_factors
 
 
 def fmt_elapsed(seconds):
@@ -53,13 +54,13 @@ if __name__ == "__main__":
     combine_cfg = load_combine_config()
     output_name = combine_cfg.get("output_name", "combine_1")
 
-    # 1. 合成因子
+    # 1. 分组层次合成因子
     print(f"{'#'*60}")
-    print(f"  步骤1: 合成因子 {output_name}")
+    print(f"  步骤1: 分组层次合成因子 {output_name}")
     print(f"{'#'*60}\n")
     t0 = time.time()
-    df_combined = combine_factors(START_DATE, END_DATE)
-    timings["1.因子合成(DB查询+zscore+方向处理+等权合成)"] = time.time() - t0
+    df_combined = group_combine_factors(START_DATE, END_DATE)
+    timings["1.因子合成(分组层次合成)"] = time.time() - t0
 
     if df_combined.empty:
         print("合成因子为空，退出")
@@ -81,6 +82,16 @@ if __name__ == "__main__":
     df_calendar = get_trading_calendar(START_DATE, mkt_end)
     timings["3.交易日历"] = time.time() - t0
     print(f"交易日历: {len(df_calendar)} 条 [{fmt_elapsed(timings['3.交易日历'])}]\n")
+
+    # 3.5 ST股票和涨跌停股票（用于剔除）
+    print("正在获取ST股票数据...")
+    t0 = time.time()
+    df_st = get_st_stocks(START_DATE, mkt_end)
+    print(f"ST股票: {len(df_st)} 条")
+    df_notrade = get_notrade_stocks(START_DATE, mkt_end)
+    print(f"涨跌停股票: {len(df_notrade)} 条")
+    timings["3.5.ST与涨跌停数据"] = time.time() - t0
+    print(f"ST与涨跌停数据获取完成 [{fmt_elapsed(timings['3.5.ST与涨跌停数据'])}]\n")
 
     # 4. 指数成分
     print("正在获取指数成分数据...")
@@ -108,6 +119,8 @@ if __name__ == "__main__":
         df_stock=df_stock,
         df_index_ret=df_index_ret,
         df_calendar=df_calendar,
+        df_st=df_st,
+        df_notrade=df_notrade,
     )
     timings["5.回测+报告生成"] = time.time() - t0
 

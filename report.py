@@ -369,7 +369,9 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
                     df_stock: pd.DataFrame = None,
                     df_index_ret: pd.DataFrame = None,
                     output_base: str = None,
-                    df_calendar: pd.DataFrame = None):
+                    df_calendar: pd.DataFrame = None,
+                    df_st: pd.DataFrame = None,
+                    df_notrade: pd.DataFrame = None):
     """
     生成因子分层回测 PDF 报告
 
@@ -419,6 +421,8 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             df_stock=df_stock,
             df_index_ret=df_index_ret,
             df_calendar=df_calendar,
+            df_st=df_st,
+            df_notrade=df_notrade,
         )
         df_info = sa.run()
 

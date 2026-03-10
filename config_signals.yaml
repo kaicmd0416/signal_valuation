@@ -5,28 +5,21 @@
 # 修改此列表即可控制 run.py 跑哪些单因子
 
 signals:
-  - "ATER"
-  - "CTA"
-  - "DTA"
-  - "FAT"
-  - "GPG"
-  - "GrossProfitTTM"
+  # --- 流动性/换手率因子 ---
+  - "turnoverRateAvg20d"
+  - "turnoverRateAvg120d"
   - "ILLIQ"
-  - "LDTWC"
-  - "LnFloatCap"
-  - "LnFloatCap1"
-  - "NetProfitTTM"
-  - "OCFPR"
-  - "OCFTD"
+  # --- 估值因子 ---
   - "PB"
   - "PCF"
   - "PE"
-  - "ROA"
-  - "ROE"
+  # --- 盈利质量因子 ---
+  - "OCFPR"
+  - "OCFTD"
+  - "GPG"
+  # --- 动量/反转因子 ---
   - "RTN1"
-  - "RTN12"
   - "RTN3"
   - "RTN6"
-  - "TAT"
-  - "turnoverRateAvg120d"
-  - "turnoverRateAvg20d"
+  # --- 市值因子 ---
+  - "LnFloatCap"

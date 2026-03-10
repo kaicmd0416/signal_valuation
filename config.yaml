@@ -1,0 +1,27 @@
+# ============================================================
+# 基础配置: 数据库连接 + 输出路径 + 回测参数
+# ============================================================
+
+database:
+  factor:
+    host: rm-cn-fhh4gzo9900083vo.rwlb.rds.aliyuncs.com
+    port: 3306
+    user: kai
+    password: "Abcd1234#"
+    database: data_prepared_hg
+  market:
+    host: rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com
+    port: 3306
+    user: kai
+    password: "Abcd1234#"
+    database: data_prepared_new
+
+output:
+  base_dir: "D:/Signal_backtesting/output"
+
+# 共享回测参数（run.py 和 run_combine.py 均使用）
+backtest:
+  start_date: "2023-06-30"
+  end_date: "2025-12-31"
+  n_groups: 5
+  index_list: ["hs300", "zz500", "zz1000", "zz2000"]

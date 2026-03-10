@@ -1,0 +1,32 @@
+# ============================================================
+# 单因子回测配置
+# ============================================================
+# 列出需要逐个运行分层回测的因子名称
+# 修改此列表即可控制 run.py 跑哪些单因子
+
+signals:
+  - "ATER"
+  - "CTA"
+  - "DTA"
+  - "FAT"
+  - "GPG"
+  - "GrossProfitTTM"
+  - "ILLIQ"
+  - "LDTWC"
+  - "LnFloatCap"
+  - "LnFloatCap1"
+  - "NetProfitTTM"
+  - "OCFPR"
+  - "OCFTD"
+  - "PB"
+  - "PCF"
+  - "PE"
+  - "ROA"
+  - "ROE"
+  - "RTN1"
+  - "RTN12"
+  - "RTN3"
+  - "RTN6"
+  - "TAT"
+  - "turnoverRateAvg120d"
+  - "turnoverRateAvg20d"

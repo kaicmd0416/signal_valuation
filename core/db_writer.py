@@ -2,7 +2,7 @@
 数据库入库模块
 ============
 从 globalToolsFunc/sql_saving.py 移植精简而来。
-提供 REPLACE INTO 方式写入 MySQL 的能力。
+使用 DELETE + INSERT 方式写入 MySQL。
 """
 
 import yaml
@@ -11,7 +11,7 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy import (
-    create_engine, inspect, MetaData, Table, Column, text,
+    create_engine, inspect, MetaData, Table, Column, text, bindparam,
     String, Float, Integer, DateTime, Date,
 )
 
@@ -61,26 +61,8 @@ def _ensure_table(engine, table_name: str, schema: dict, private_keys: list):
 
 
 # ============================================================
-# REPLACE INTO 写入
+# 数据标准化
 # ============================================================
-
-def _replace_into_method(table, conn, keys, data_iter):
-    """pandas to_sql 的自定义 method，使用 REPLACE INTO"""
-    l_columns = [f"`{col}`" for col in keys]
-    columns = ", ".join(l_columns)
-    placeholders = ", ".join([f":{k}" for k in keys])
-    sql = f"REPLACE INTO {table.name} ({columns}) VALUES ({placeholders})"
-
-    data = []
-    for row in data_iter:
-        processed_row = {}
-        for i, val in enumerate(row):
-            processed_row[keys[i]] = None if val is None else str(val)
-        data.append(processed_row)
-
-    stmt = text(sql)
-    conn.execute(stmt, data)
-
 
 def _standardize_df(df: pd.DataFrame, schema: dict) -> pd.DataFrame:
     """按 schema 标准化 DataFrame 类型"""
@@ -114,15 +96,15 @@ def _standardize_df(df: pd.DataFrame, schema: dict) -> pd.DataFrame:
 # 对外接口
 # ============================================================
 
-def save_combine_score(df: pd.DataFrame,
-                       delete_before_insert: bool = True):
+def save_combine_score(df: pd.DataFrame):
     """
     将合成因子打分写入 combine_score 表
+
+    逻辑: 先按 score_name 删除对应日期的旧数据，再 INSERT 新数据。
 
     Parameters
     ----------
     df : DataFrame[valuation_date, code, score_name, final_score]
-    delete_before_insert : True 则先按 score_name + 日期 删除旧数据
     """
     cfg = _load_db_saving_config("CombineScore")
     db_url = cfg["db_url"]
@@ -150,32 +132,29 @@ def save_combine_score(df: pd.DataFrame,
         # 确保表存在
         _ensure_table(engine, table_name, schema, private_keys)
 
-        # 删除旧数据
-        if delete_before_insert:
-            val_list = df_write["valuation_date"].unique().tolist()
-            if val_list:
-                with engine.connect() as conn:
-                    from sqlalchemy import bindparam
-                    delete_sql = text(
-                        f"DELETE FROM {table_name} "
-                        f"WHERE score_name = :sname "
-                        f"AND valuation_date IN :val_list"
-                    ).bindparams(bindparam("val_list", expanding=True))
-                    conn.execute(delete_sql, {
-                        "sname": score_name,
-                        "val_list": val_list,
-                    })
-                    conn.commit()
-                    print(f"  已删除 {score_name} 旧数据: {len(val_list)}天")
+        # 先删除该 score_name 对应日期的旧数据
+        val_list = df_write["valuation_date"].unique().tolist()
+        if val_list:
+            with engine.connect() as conn:
+                delete_sql = text(
+                    f"DELETE FROM {table_name} "
+                    f"WHERE score_name = :sname "
+                    f"AND valuation_date IN :val_list"
+                ).bindparams(bindparam("val_list", expanding=True))
+                conn.execute(delete_sql, {
+                    "sname": score_name,
+                    "val_list": val_list,
+                })
+                conn.commit()
+                print(f"  已删除 {score_name} 旧数据: {len(val_list)}天")
 
-        # 写入
+        # INSERT 新数据
         df_write.to_sql(
             name=table_name,
             con=engine,
             if_exists="append",
             index=False,
             chunksize=chunk_size,
-            method=_replace_into_method,
         )
         print(f"  已入库 {score_name}: {len(df_write)}行")
     finally:

@@ -382,7 +382,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
         if mode == "prod":
             t0 = time.time()
             print(f"\n  入库: {output_name} → combine_score 表")
-            save_combine_score(df_combined, delete_before_insert=True)
+            save_combine_score(df_combined)
             timings[f"{index_name}.入库"] = time.time() - t0
 
     # 耗时汇总
@@ -511,7 +511,7 @@ def run_combine_update(target_date, index_list=None, mode="prod"):
         # 入库 (仅 prod 模式)
         if mode == "prod":
             print(f"  入库: {output_name} → combine_score 表")
-            save_combine_score(df_target, delete_before_insert=True)
+            save_combine_score(df_target)
 
     # 汇总
     print(f"\n{'='*60}")

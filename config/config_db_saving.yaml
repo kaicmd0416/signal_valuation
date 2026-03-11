@@ -1,0 +1,19 @@
+# ============================================================
+# 数据入库配置
+# ============================================================
+
+CombineScore:
+  table_name: "combine_score"
+  db_url: "mysql+pymysql://prod:Abcd1234#@rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com:3306/portfolio_new?autocommit=True"
+  chunk_size: 20000
+  workers: 4
+  private_keys:
+    - "valuation_date"
+    - "code"
+    - "score_name"
+  schema:
+    valuation_date: { type: String, length: 50 }
+    code: { type: String, length: 50 }
+    score_name: { type: String, length: 50 }
+    final_score: { type: Float }
+    update_time: { type: DateTime }

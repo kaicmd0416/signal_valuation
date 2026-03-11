@@ -519,7 +519,8 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
                     date_mode: str = "target_date",
                     df_top: pd.DataFrame = None,
                     top_n_extra: int = 0,
-                    top_n: int = 0):
+                    top_n: int = 0,
+                    mode: str = None):
     """
     生成因子分层回测 PDF 报告
 
@@ -543,11 +544,15 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
     df_top       : 全市场top N组合持仓 [valuation_date, code, final_score]（可选，合成因子用）
     top_n_extra  : Top组合选股数量-合成因子用（如200），用于标题显示
     top_n        : Top组合选股数量-单因子用（如50），从成分内选因子值最高的N只
+    mode         : "test" 或 "prod"，输出到对应子目录; None则直接输出到base_dir
     """
     if output_base is None:
         output_base = load_config().get("output", {}).get(
             "base_dir", os.path.join(os.path.dirname(__file__), "output")
         )
+
+    if mode is not None:
+        output_base = os.path.join(output_base, mode)
 
     index_list = list(index_data.keys()) if index_data else []
 

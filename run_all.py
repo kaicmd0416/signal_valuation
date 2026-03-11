@@ -35,6 +35,7 @@ from core.data_prepare import (
     next_workday,
 )
 from core.report import generate_report
+from core.db_writer import save_combine_score
 from core.factor_combine import combine_factors_for_index
 
 
@@ -150,9 +151,9 @@ def run_single_backtest(factors=None, index_list=None,
     date_mode  : "available_date" (默认) 或 "target_date"
     top_n      : Top组合选股数(成分内), None则从 config.yaml 读取, 0=不跑
     """
-    # 补全默认参数
-    cfg = load_config()
-    bt = cfg["backtest"]
+    # 从 config_single_signal.yaml 读取默认参数
+    signals_cfg = load_signals_config()
+    bt = signals_cfg["backtest"]
     start_date = start_date or bt["start_date"]
     end_date = end_date or bt["end_date"]
     n_groups = n_groups or bt["n_groups"]
@@ -161,7 +162,6 @@ def run_single_backtest(factors=None, index_list=None,
         top_n = bt.get("top_n", 0)
 
     if factors is None:
-        signals_cfg = load_signals_config()
         factors = signals_cfg["signals"]
 
     print(f"{'='*60}")
@@ -221,39 +221,34 @@ def run_single_backtest(factors=None, index_list=None,
 # 功能2: 历史区间因子合成
 # ============================================================
 
-TOP_N_DEFAULT = 200
-
 
 def run_combine_history(index_list=None, start_date=None, end_date=None,
-                        backtest=True, n_groups=None,
-                        top_n_extra=TOP_N_DEFAULT):
+                        backtest=True, mode="test"):
     """
     历史区间因子合成
 
-    按 config_combine_by_index.yaml 配置，逐指数做两层IC加权合成。
+    按 config_combine_by_index_{mode}.yaml 配置，逐指数做两层IC加权合成。
     backtest=True 时额外做分层回测+生成报告。
 
     Parameters
     ----------
-    index_list  : 指数列表, None则从 combine 配置读取全部
-    start_date  : 开始日期, None则从 config.yaml 读取
-    end_date    : 结束日期, None则从 config.yaml 读取
+    index_list  : 指数列表, None则从配置读取全部
+    start_date  : 开始日期, None则从配置读取
+    end_date    : 结束日期, None则从配置读取
     backtest    : True时做分层回测+生成PDF/Excel报告
-    n_groups    : 分层数, None则从 config.yaml 读取
-    top_n_extra : 全市场top选股数(backtest=True时生效)
+    mode        : "test" 或 "prod"，决定读取哪个配置文件
 
     Returns
     -------
     dict : {index_name: DataFrame[valuation_date, code, score_name, final_score]}
     """
     # 加载配置
-    cfg = load_config()
-    bt = cfg["backtest"]
+    combine_cfg = load_combine_by_index_config(mode=mode)
+    bt = combine_cfg["backtest"]
     start_date = start_date or bt["start_date"]
     end_date = end_date or bt["end_date"]
-    n_groups = n_groups or bt["n_groups"]
-
-    combine_cfg = load_combine_by_index_config()
+    n_groups = bt["n_groups"]
+    top_n_extra = bt.get("top_n", 200)
     weight_method = combine_cfg.get("weight_method", "equal")
     ic_window = combine_cfg.get("ic_window", 20)
     smooth_window = combine_cfg.get("smooth_window", 1)
@@ -273,7 +268,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
             return {}
 
     print(f"{'='*60}")
-    print(f"  因子合成 (历史模式)")
+    print(f"  因子合成 (历史模式 | {mode})")
     print(f"  回测区间: {start_date} ~ {end_date}")
     print(f"  日期模式: {date_mode}")
     print(f"  合成方法: {weight_method}"
@@ -379,8 +374,16 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
                 date_mode=date_mode,
                 df_top=df_top,
                 top_n_extra=top_n_extra,
+                mode=mode,
             )
             timings[f"{index_name}.回测+报告"] = time.time() - t0
+
+        # 入库 (仅 prod 模式)
+        if mode == "prod":
+            t0 = time.time()
+            print(f"\n  入库: {output_name} → combine_score 表")
+            save_combine_score(df_combined, delete_before_insert=True)
+            timings[f"{index_name}.入库"] = time.time() - t0
 
     # 耗时汇总
     if timings:
@@ -401,24 +404,25 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 # 功能3: 单日因子合成更新
 # ============================================================
 
-def run_combine_update(target_date, index_list=None):
+def run_combine_update(target_date, index_list=None, mode="prod"):
     """
     单日因子合成更新
 
-    根据 config_combine_by_index.yaml 配置，计算指定日期的合成因子。
+    根据 config_combine_by_index_{mode}.yaml 配置，计算指定日期的合成因子。
     内部会自动回溯足够的历史数据以计算IC权重和MA平滑。
 
     Parameters
     ----------
     target_date : 目标持仓日 (T日), 格式 "YYYY-MM-DD"
-    index_list  : 指数列表, None则从 combine 配置读取全部
+    index_list  : 指数列表, None则从配置读取全部
+    mode        : "test" 或 "prod"，决定读取哪个配置文件 (默认prod)
 
     Returns
     -------
     dict : {index_name: DataFrame[valuation_date, code, score_name, final_score]}
            只包含 target_date 当天的数据
     """
-    combine_cfg = load_combine_by_index_config()
+    combine_cfg = load_combine_by_index_config(mode=mode)
     weight_method = combine_cfg.get("weight_method", "equal")
     ic_window = combine_cfg.get("ic_window", 60)
     smooth_window = combine_cfg.get("smooth_window", 5)
@@ -504,6 +508,11 @@ def run_combine_update(target_date, index_list=None):
 
         results[index_name] = df_target
 
+        # 入库 (仅 prod 模式)
+        if mode == "prod":
+            print(f"  入库: {output_name} → combine_score 表")
+            save_combine_score(df_target, delete_before_insert=True)
+
     # 汇总
     print(f"\n{'='*60}")
     print(f"  更新完成")
@@ -561,14 +570,16 @@ if __name__ == "__main__":
     p_combine.add_argument("--end", default=None, help="结束日期")
     p_combine.add_argument("--no-backtest", action="store_true",
                            help="只合成不做回测")
-    p_combine.add_argument("--top-n", type=int, default=TOP_N_DEFAULT,
-                           help=f"Top组合选股数 (默认{TOP_N_DEFAULT})")
+    p_combine.add_argument("--mode", default="test", choices=["test", "prod"],
+                           help="配置模式: test或prod (默认test)")
 
     # --- update: 单日更新 ---
     p_update = subparsers.add_parser("update", help="单日因子合成更新")
     p_update.add_argument("target_date", help="目标日期 YYYY-MM-DD")
     p_update.add_argument("--index", nargs="+", default=None,
                           help="指数列表 (默认从combine配置读取)")
+    p_update.add_argument("--mode", default="prod", choices=["test", "prod"],
+                          help="配置模式: test或prod (默认prod)")
 
     args = parser.parse_args()
 
@@ -594,7 +605,7 @@ if __name__ == "__main__":
             start_date=args.start,
             end_date=args.end,
             backtest=not args.no_backtest,
-            top_n_extra=args.top_n,
+            mode=args.mode,
         )
         # 打印返回结果摘要
         print(f"\n返回结果:")
@@ -607,6 +618,7 @@ if __name__ == "__main__":
         results = run_combine_update(
             target_date=args.target_date,
             index_list=args.index,
+            mode=args.mode,
         )
 
     print(f"\n总耗时: {_fmt_elapsed(time.time() - total_start)}")

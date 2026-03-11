@@ -31,14 +31,23 @@ def load_config() -> dict:
 
 
 def load_signals_config() -> dict:
-    """加载 config_signals.yaml（单因子回测列表）"""
-    with open(_CONFIG_DIR / "config_signals.yaml", "r", encoding="utf-8") as f:
+    """加载 config_single_signal.yaml（单因子回测配置）"""
+    with open(_CONFIG_DIR / "config_single_signal.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def load_combine_by_index_config() -> dict:
-    """加载 config_combine_by_index.yaml（按指数分别合成配置）"""
-    with open(_CONFIG_DIR / "config_combine_by_index.yaml", "r", encoding="utf-8") as f:
+def load_combine_by_index_config(mode: str = "test") -> dict:
+    """
+    加载按指数分别合成配置
+
+    Parameters
+    ----------
+    mode : "test" 或 "prod"
+        test → config_combine_by_index_test.yaml
+        prod → config_combine_by_index_prod.yaml
+    """
+    filename = f"config_combine_by_index_{mode}.yaml"
+    with open(_CONFIG_DIR / filename, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

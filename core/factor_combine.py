@@ -335,24 +335,26 @@ def combine_factors_for_index(start_date: str, end_date: str,
         _cal_map = None
 
     if not df_st.empty:
-        df_st["valuation_date"] = df_st["valuation_date"].astype(str)
+        _df_st = df_st[["valuation_date", "code"]].copy()
+        _df_st["valuation_date"] = _df_st["valuation_date"].astype(str)
         if _cal_map is not None:
-            df_st["valuation_date"] = df_st["valuation_date"].map(_cal_map)
-            df_st.dropna(subset=["valuation_date"], inplace=True)
+            _df_st["valuation_date"] = _df_st["valuation_date"].map(_cal_map)
+            _df_st.dropna(subset=["valuation_date"], inplace=True)
         df_all_raw = df_all_raw.merge(
-            df_st[["valuation_date", "code"]],
+            _df_st,
             on=["valuation_date", "code"],
             how="left", indicator="_st"
         )
         df_all_raw = df_all_raw[df_all_raw["_st"] == "left_only"].drop(columns=["_st"])
 
     if not df_notrade.empty:
-        df_notrade["valuation_date"] = df_notrade["valuation_date"].astype(str)
+        _df_notrade = df_notrade[["valuation_date", "code"]].copy()
+        _df_notrade["valuation_date"] = _df_notrade["valuation_date"].astype(str)
         if _cal_map is not None:
-            df_notrade["valuation_date"] = df_notrade["valuation_date"].map(_cal_map)
-            df_notrade.dropna(subset=["valuation_date"], inplace=True)
+            _df_notrade["valuation_date"] = _df_notrade["valuation_date"].map(_cal_map)
+            _df_notrade.dropna(subset=["valuation_date"], inplace=True)
         df_all_raw = df_all_raw.merge(
-            df_notrade[["valuation_date", "code"]],
+            _df_notrade,
             on=["valuation_date", "code"],
             how="left", indicator="_notrade"
         )
@@ -362,19 +364,19 @@ def combine_factors_for_index(start_date: str, end_date: str,
     print(f"  剔除ST和涨跌停: {n_removed} 条")
     print(f"  剩余: {len(df_all_raw)} 条, 耗时 {time.time()-t0:.1f}s")
 
-    # 全市场数据也剔除ST和涨跌停
+    # 全市场数据也剔除ST和涨跌停（复用上面已映射的 _df_st/_df_notrade）
     if df_full_market_raw is not None:
         n_fm_before = len(df_full_market_raw)
         if not df_st.empty:
             df_full_market_raw = df_full_market_raw.merge(
-                df_st[["valuation_date", "code"]],
+                _df_st,
                 on=["valuation_date", "code"],
                 how="left", indicator="_st"
             )
             df_full_market_raw = df_full_market_raw[df_full_market_raw["_st"] == "left_only"].drop(columns=["_st"])
         if not df_notrade.empty:
             df_full_market_raw = df_full_market_raw.merge(
-                df_notrade[["valuation_date", "code"]],
+                _df_notrade,
                 on=["valuation_date", "code"],
                 how="left", indicator="_notrade"
             )

@@ -371,7 +371,8 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
                     output_base: str = None,
                     df_calendar: pd.DataFrame = None,
                     df_st: pd.DataFrame = None,
-                    df_notrade: pd.DataFrame = None):
+                    df_notrade: pd.DataFrame = None,
+                    date_mode: str = "target_date"):
     """
     生成因子分层回测 PDF 报告
 
@@ -390,6 +391,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
     df_index_ret : 指数收益率 [valuation_date, code, pct_chg]
     output_base  : 输出根目录（默认从config.yaml读取）
     df_calendar  : 交易日历（可选，加速持仓日映射）
+    date_mode    : "target_date" | "available_date"
     """
     if output_base is None:
         output_base = load_config().get("output", {}).get(
@@ -423,6 +425,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             df_calendar=df_calendar,
             df_st=df_st,
             df_notrade=df_notrade,
+            date_mode=date_mode,
         )
         df_info = sa.run()
 

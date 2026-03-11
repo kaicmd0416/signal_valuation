@@ -78,12 +78,14 @@ class SignalAnalysis:
                  df_index_ret: pd.DataFrame = None,
                  df_calendar: pd.DataFrame = None,
                  df_st: pd.DataFrame = None,
-                 df_notrade: pd.DataFrame = None):
+                 df_notrade: pd.DataFrame = None,
+                 date_mode: str = "target_date"):
 
         self.signal_name = signal_name
         self.index_name = index_name
         self.index_cn = INDEX_CN_MAP.get(index_name, index_name)
         self.n_groups = n_groups
+        self.date_mode = date_mode  # "target_date" | "available_date"
 
         self.df_factor = df_factor if df_factor is not None else pd.DataFrame()
         self.df_index_comp = df_index_comp if df_index_comp is not None else pd.DataFrame()
@@ -121,23 +123,44 @@ class SignalAnalysis:
             how="inner",
         )
 
-        # 持仓日期 = next_workday(available_date)
-        if not self.df_calendar.empty:
-            cal_map = self.df_calendar.set_index("valuation_date")["next_workday"]
-            df_merged["valuation_date"] = df_merged["available_date"].map(cal_map)
-            df_merged.dropna(subset=["valuation_date"], inplace=True)
+        # 持仓日期映射
+        # date_mode 只影响信号取法，信号日期到达回测时应已统一为 target_date
+        if self.date_mode == "target_date":
+            # target_date 模式: 因子日期 = target_date，直接作为持仓日
+            df_merged["valuation_date"] = df_merged["available_date"]
         else:
-            df_merged["valuation_date"] = df_merged["available_date"].apply(
-                gt.next_workday_calculate
-            )
+            # available_date 模式 (兼容旧代码): 因子日期 = available_date(T-1)，需映射到 T
+            if not self.df_calendar.empty:
+                cal_map = self.df_calendar.set_index("valuation_date")["next_workday"]
+                df_merged["valuation_date"] = df_merged["available_date"].map(cal_map)
+                df_merged.dropna(subset=["valuation_date"], inplace=True)
+            else:
+                df_merged["valuation_date"] = df_merged["available_date"].apply(
+                    gt.next_workday_calculate
+                )
+
+        # 统一日期类型为 str，确保与 ST/涨跌停等数据 merge 时类型一致
+        df_merged["valuation_date"] = df_merged["valuation_date"].astype(str)
         print(f"  指数内因子数据: {len(df_merged)} 条")
+
+        # ST/涨跌停的DB日期 = 事件发生日(T-1), 影响下一交易日(T)的交易
+        # 将事件日期映射到 target_date(T) 后再剔除
+        _cal_map = None
+        if not self.df_calendar.empty:
+            _cal_map = self.df_calendar.set_index(
+                self.df_calendar["valuation_date"].astype(str)
+            )["next_workday"].astype(str)
 
         # 剔除ST股票
         if not self.df_st.empty:
             n_before = len(df_merged)
+            df_st = self.df_st[["valuation_date", "code"]].copy()
+            df_st["valuation_date"] = df_st["valuation_date"].astype(str)
+            if _cal_map is not None:
+                df_st["valuation_date"] = df_st["valuation_date"].map(_cal_map)
+                df_st.dropna(subset=["valuation_date"], inplace=True)
             df_merged = df_merged.merge(
-                self.df_st[["valuation_date", "code"]],
-                on=["valuation_date", "code"],
+                df_st, on=["valuation_date", "code"],
                 how="left", indicator="_st"
             )
             df_merged = df_merged[df_merged["_st"] == "left_only"].drop(columns=["_st"])
@@ -146,9 +169,13 @@ class SignalAnalysis:
         # 剔除涨跌停（不可交易）股票
         if not self.df_notrade.empty:
             n_before = len(df_merged)
+            df_notrade = self.df_notrade[["valuation_date", "code"]].copy()
+            df_notrade["valuation_date"] = df_notrade["valuation_date"].astype(str)
+            if _cal_map is not None:
+                df_notrade["valuation_date"] = df_notrade["valuation_date"].map(_cal_map)
+                df_notrade.dropna(subset=["valuation_date"], inplace=True)
             df_merged = df_merged.merge(
-                self.df_notrade[["valuation_date", "code"]],
-                on=["valuation_date", "code"],
+                df_notrade, on=["valuation_date", "code"],
                 how="left", indicator="_notrade"
             )
             df_merged = df_merged[df_merged["_notrade"] == "left_only"].drop(columns=["_notrade"])

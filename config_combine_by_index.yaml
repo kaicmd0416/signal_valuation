@@ -1,0 +1,117 @@
+# ============================================================
+# 按指数分别合成因子配置
+# ============================================================
+# 每个指数独立配置:
+#   - output_name: 合成因子名称
+#   - factors: 因子列表 + 该指数下的方向
+#
+# direction: 1=正向(因子值越大越好), -1=反向(因子值越小越好)
+#
+# weight_method: 合成权重方式
+#   - "equal"     : 等权合成 (默认)
+#   - "ic_weight" : 滚动IC加权合成
+#
+# ic_window: IC加权的滚动窗口天数 (默认20)
+#
+# date_mode: 数据库 valuation_date 的含义
+#   - "target_date"    : 数据描述的目标日期 (收盘后可用, 下一交易日持仓)
+#   - "available_date" : 数据可用日期 (开盘前可用, 当天持仓)
+#
+# 注意: RTN系列因子在沪深300上表现为正向动量，在中小盘上为反向(反转)
+# ============================================================
+
+weight_method: "ic_weight"
+ic_window: 20
+date_mode: "target_date"
+
+indices:
+  hs300:
+    output_name: "combine_hs300"
+    factors:
+      # --- 流动性因子 ---
+      - name: "turnoverRateAvg20d"
+        direction: 1       # IC~18, 多空~1.1x
+      - name: "ILLIQ"
+        direction: -1      # IC(翻转)~17.5, 与换手率低相关
+      # --- 估值因子 ---
+      - name: "PB"
+        direction: 1       # IC~15
+      - name: "PCF"
+        direction: 1       # 多空~1.25x, IC稳定上升
+      - name: "PE"
+        direction: 1       # 多空~1.45x创新高, 近期最强
+
+  zz500:
+    output_name: "combine_zz500"
+    factors:
+      # --- 流动性/换手率因子 ---
+      - name: "turnoverRateAvg20d"
+        direction: 1
+      - name: "turnoverRateAvg120d"
+        direction: 1
+      - name: "ILLIQ"
+        direction: -1
+      # --- 估值因子 ---
+      - name: "PB"
+        direction: 1
+      - name: "PCF"
+        direction: 1
+      - name: "PE"
+        direction: 1
+      # --- 反转因子 (中小盘为反向) ---
+      - name: "RTN1"
+        direction: -1
+      - name: "RTN3"
+        direction: -1
+      - name: "RTN6"
+        direction: -1
+
+  zz1000:
+    output_name: "combine_zz1000"
+    factors:
+      # --- 流动性/换手率因子 ---
+      - name: "turnoverRateAvg20d"
+        direction: 1
+      - name: "turnoverRateAvg120d"
+        direction: 1
+      - name: "ILLIQ"
+        direction: -1
+      # --- 估值因子 ---
+      - name: "PB"
+        direction: 1
+      - name: "PCF"
+        direction: 1
+      - name: "PE"
+        direction: 1
+      # --- 反转因子 ---
+      - name: "RTN1"
+        direction: -1
+      - name: "RTN3"
+        direction: -1
+      - name: "RTN6"
+        direction: -1
+
+  zz2000:
+    output_name: "combine_zz2000"
+    factors:
+      # --- 流动性/换手率因子 ---
+      - name: "turnoverRateAvg20d"
+        direction: 1
+      - name: "turnoverRateAvg120d"
+        direction: 1
+      - name: "ILLIQ"
+        direction: -1
+      # --- 估值因子 ---
+      - name: "PB"
+        direction: 1
+      - name: "PCF"
+        direction: 1
+      - name: "PE"
+        direction: 1
+      # --- 反转因子 ---
+      - name: "RTN1"
+        direction: -1
+      - name: "RTN3"
+        direction: -1
+      - name: "RTN6"
+        direction: -1

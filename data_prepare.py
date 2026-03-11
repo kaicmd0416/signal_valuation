@@ -48,6 +48,12 @@ def load_signals_config() -> dict:
         return yaml.safe_load(f)
 
 
+def load_combine_by_index_config() -> dict:
+    """加载 config_combine_by_index.yaml（按指数分别合成配置）"""
+    with open(_CONFIG_DIR / "config_combine_by_index.yaml", "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 def get_engine(db_key: str = "factor"):
     """
     创建数据库连接引擎

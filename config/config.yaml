@@ -21,7 +21,8 @@ output:
 
 # 共享回测参数（run.py 和 run_combine.py 均使用）
 backtest:
-  start_date: "2023-06-30"
-  end_date: "2025-12-31"
+  start_date: "2023-07-01"
+  end_date: "2026-03-10"
   n_groups: 5
-  index_list: ["hs300", "zz500", "zz1000", "zz2000"]
+  top_n: 100
+  index_list: ["hs300", "zz500", "zz1000", "zz2000", "zzA500"]

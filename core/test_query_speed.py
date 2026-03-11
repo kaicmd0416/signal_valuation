@@ -10,19 +10,11 @@
 4. EXPLAIN 分析执行计划
 """
 
-import os
-import sys
 import time
-
-path = os.getenv('GLOBAL_TOOLSFUNC_new')
-sys.path.append(path)
-import global_dic as glv
-
-glv.init()
 
 import pandas as pd
 import sqlalchemy
-from data_prepare import get_engine, get_factor_data, get_factor_data_batch
+from .data_prepare import get_engine, get_factor_data, get_factor_data_batch
 
 START_DATE = "2023-06-30"
 END_DATE = "2025-12-31"

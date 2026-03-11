@@ -1,0 +1,194 @@
+# ============================================================
+# 按指数分别合成因子配置 (两层IC加权)
+# ============================================================
+# Level 1: 簇内IC加权 — 同簇高相关因子先合成为一个"簇因子"
+# Level 2: 簇间IC加权 — 各簇因子间再做IC加权合成
+#
+# 高相关因子簇:
+#   估值: PB/PCF/PE/PS (corr 0.7~0.93)
+#   换手: turnoverRateAvg20d/120d (corr 0.96)
+#   反转: RTN1/RTN3/RTN6/RTN12 (corr 0.5~0.85)
+#   市值: LnFloatCap/LnFloatCap1 (corr 0.94)
+#   盈利: ROA/ROE/OCFTD (corr 0.6~0.8)
+#
+# 选簇原则: 簇内至少一个因子 |IR| >= 0.10
+# vp08/a3 为异常数据，禁止使用
+# ============================================================
+
+weight_method: "two_level_ic"
+ic_window: 60
+smooth_window: 5
+date_mode: "available_date"
+
+indices:
+  hs300:
+    output_name: "combine_hs300_available"
+    clusters:
+      # --- 估值簇 (max IR=0.16) ---
+      估值:
+        factors:
+          - name: "PB"
+            direction: 1       # IR=0.15
+          - name: "PCF"
+            direction: 1       # IR=0.16
+          - name: "PE"
+            direction: 1       # IR=0.12
+          - name: "PS"
+            direction: 1       # IR=0.12
+      # --- 换手率簇 (max IR=0.14) ---
+      换手率:
+        factors:
+          - name: "turnoverRateAvg20d"
+            direction: 1       # IR=0.14, RankIC>0 高换手好
+          - name: "turnoverRateAvg120d"
+            direction: 1       # IR=0.12, RankIC>0 高换手好
+      # --- 独立因子 (单因子簇) ---
+      流动性:
+        factors:
+          - name: "ILLIQ"
+            direction: -1      # IR=0.19
+      CTA:
+        factors:
+          - name: "CTA"
+            direction: -1      # IR=0.12
+
+  zz500:
+    output_name: "combine_zz500_available"
+    clusters:
+      # --- 估值簇 (max IR=0.18) ---
+      估值:
+        factors:
+          - name: "PB"
+            direction: 1       # IR=0.18
+          - name: "PCF"
+            direction: 1       # IR=0.15
+          - name: "PE"
+            direction: 1       # IR=0.11
+          - name: "PS"
+            direction: 1       # IR=0.14
+      # --- 换手率簇 (max IR=0.18) ---
+      换手率:
+        factors:
+          - name: "turnoverRateAvg20d"
+            direction: 1       # IR=0.18, RankIC>0 高换手好
+          - name: "turnoverRateAvg120d"
+            direction: 1       # IR=0.13, RankIC>0 高换手好
+      # --- 盈利簇 (max IR=0.11) ---
+      盈利:
+        factors:
+          - name: "ROA"
+            direction: 1       # IR=0.06
+          - name: "ROE"
+            direction: 1       # IR=0.03
+          - name: "OCFTD"
+            direction: 1       # IR=0.11
+      # --- 独立因子 ---
+      流动性:
+        factors:
+          - name: "ILLIQ"
+            direction: -1      # IR=0.16
+      CTA:
+        factors:
+          - name: "CTA"
+            direction: -1      # IR=0.14
+      换手变化:
+        factors:
+          - name: "TurnoverRateChange"
+            direction: -1      # IR=0.20
+
+  zzA500:
+    output_name: "combine_zzA500_available"
+    clusters:
+      # --- 估值簇 (max IR=0.19) ---
+      估值:
+        factors:
+          - name: "PB"
+            direction: 1       # IR=0.19
+          - name: "PCF"
+            direction: 1       # IR=0.17
+          - name: "PS"
+            direction: 1       # IR=0.16
+          - name: "PE"
+            direction: 1       # IR=0.13
+      # --- 换手率簇 (max IR=0.15) ---
+      换手率:
+        factors:
+          - name: "turnoverRateAvg20d"
+            direction: 1       # IR=0.15
+          - name: "turnoverRateAvg120d"
+            direction: 1       # IR=0.13
+      # --- 独立因子 ---
+      流动性:
+        factors:
+          - name: "ILLIQ"
+            direction: -1      # IR=0.16
+      换手变化:
+        factors:
+          - name: "TurnoverRateChange"
+            direction: -1      # IR=0.16
+      CTA:
+        factors:
+          - name: "CTA"
+            direction: -1      # IR=0.11
+      盈利增长:
+        factors:
+          - name: "GPG"
+            direction: 1       # IR=0.11
+
+  zz1000:
+    output_name: "combine_zz1000_available"
+    clusters:
+      # --- 估值簇 (max IR=0.21) ---
+      估值:
+        factors:
+          - name: "PB"
+            direction: 1       # IR=0.21
+          - name: "PCF"
+            direction: 1       # IR=0.17
+          - name: "PE"
+            direction: 1       # IR=0.15
+          - name: "PS"
+            direction: 1       # IR=0.17
+      # --- 换手率簇 (max IR=0.30) ---
+      换手率:
+        factors:
+          - name: "turnoverRateAvg20d"
+            direction: 1       # IR=0.30, zz1000高换手好
+          - name: "turnoverRateAvg120d"
+            direction: 1       # IR=0.23
+      # --- 反转簇 (max IR=0.20) ---
+      反转:
+        factors:
+          - name: "RTN1"
+            direction: -1      # IR=0.20
+          - name: "RTN3"
+            direction: -1      # IR=0.15
+          - name: "RTN6"
+            direction: -1      # IR=0.10
+          - name: "RTN12"
+            direction: -1      # IR=0.05
+      # --- 市值簇 (max IR=0.12) ---
+      市值:
+        factors:
+          - name: "LnFloatCap"
+            direction: -1      # IR=0.08
+          - name: "LnFloatCap1"
+            direction: -1      # IR=0.12, 小市值
+      # --- 盈利簇 (max IR=0.15) ---
+      盈利:
+        factors:
+          - name: "ROA"
+            direction: 1       # IR=0.09
+          - name: "ROE"
+            direction: 1       # IR=0.07
+          - name: "OCFTD"
+            direction: 1       # IR=0.15
+      # --- 独立因子 ---
+      流动性:
+        factors:
+          - name: "ILLIQ"
+            direction: -1      # IR=0.25
+      换手变化:
+        factors:
+          - name: "TurnoverRateChange"
+            direction: -1      # IR=0.33, 全场最高

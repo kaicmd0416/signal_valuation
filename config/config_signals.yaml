@@ -2,24 +2,40 @@
 # 单因子回测配置
 # ============================================================
 # 列出需要逐个运行分层回测的因子名称
-# 修改此列表即可控制 run.py 跑哪些单因子
+# 修改此列表即可控制 run_all.py single 跑哪些单因子
+# 注: a3/vp08 为异常数据，禁止使用
 
 signals:
   # --- 流动性/换手率因子 ---
   - "turnoverRateAvg20d"
   - "turnoverRateAvg120d"
   - "ILLIQ"
+  - "TurnoverRateChange"
   # --- 估值因子 ---
   - "PB"
   - "PCF"
   - "PE"
+  - "PS"
   # --- 盈利质量因子 ---
   - "OCFPR"
   - "OCFTD"
   - "GPG"
+  - "ROA"
+  - "ROE"
+  - "GrossProfitTTM"
+  - "NetProfitTTM"
   # --- 动量/反转因子 ---
   - "RTN1"
   - "RTN3"
   - "RTN6"
+  - "RTN12"
+  - "CTA"
   # --- 市值因子 ---
   - "LnFloatCap"
+  - "LnFloatCap1"
+  # --- 财务/运营效率因子 ---
+  - "ATER"
+  - "DTA"
+  - "FAT"
+  - "LDTWC"
+  - "TAT"

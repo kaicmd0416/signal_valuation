@@ -13,16 +13,12 @@
 - 反向因子: group_1 应跑赢 group_N
 """
 
-import os
-import sys
 import pandas as pd
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 
-path = os.getenv('GLOBAL_TOOLSFUNC_new')
-sys.path.append(path)
-import global_tools as gt
+from .data_prepare import next_workday
 
 # 指数中文名映射
 INDEX_CN_MAP = {
@@ -136,7 +132,7 @@ class SignalAnalysis:
                 df_merged.dropna(subset=["valuation_date"], inplace=True)
             else:
                 df_merged["valuation_date"] = df_merged["available_date"].apply(
-                    gt.next_workday_calculate
+                    next_workday
                 )
 
         # 统一日期类型为 str，确保与 ST/涨跌停等数据 merge 时类型一致

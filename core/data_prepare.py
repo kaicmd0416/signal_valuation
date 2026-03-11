@@ -6,24 +6,18 @@
 - 指数成分数据（data_indexcomponent 表）
 - 交易日历（chinesevaluationdate 表）
 - 行情数据（股票、指数等）
+- 交易日工具（next_workday / last_workday）
 
 所有数据均来自远程 MySQL 数据库（阿里云 RDS），
 连接信息配置在 config.yaml 的 database 段。
 """
 
-import os
-import sys
 import yaml
 import pandas as pd
 import sqlalchemy
 from pathlib import Path
 
-path = os.getenv('GLOBAL_TOOLSFUNC_new')
-sys.path.append(path)
-import global_dic as glv
-import global_tools as gt
-
-_CONFIG_DIR = Path(__file__).parent
+_CONFIG_DIR = Path(__file__).parent.parent / "config"
 
 
 # ============================================================
@@ -33,12 +27,6 @@ _CONFIG_DIR = Path(__file__).parent
 def load_config() -> dict:
     """加载 config.yaml（数据库 + 输出路径 + 回测参数）"""
     with open(_CONFIG_DIR / "config.yaml", "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def load_combine_config() -> dict:
-    """加载 config_combine.yaml（因子合成配置）"""
-    with open(_CONFIG_DIR / "config_combine.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -241,12 +229,107 @@ def get_notrade_stocks(start_date: str, end_date: str) -> pd.DataFrame:
 
 def get_market_data(start_date: str, end_date: str):
     """
-    获取行情数据（股票、港股、ETF、期权、期货、可转债、指数）
+    获取行情数据 (股票 + 指数)
 
     Returns
     -------
-    tuple : (df_stock, df_hstock, df_etf, df_option, df_future,
-             df_convertible_bond, df_index)
-        常用: market_data[0]=股票, market_data[6]=指数
+    tuple : (df_stock, None, None, None, None, None, df_index)
+        [0]=股票行情, [6]=指数行情, 其余位置保留None以兼容旧调用方式
     """
-    return gt.mktData_withdraw(start_date, end_date, False)
+    engine = get_engine("market")
+
+    # 股票行情: valuation_date, code, close, pre_close
+    query_stock = sqlalchemy.text("""
+        SELECT valuation_date, code, close, pre_close
+        FROM data_stock
+        WHERE valuation_date BETWEEN :start_date AND :end_date
+    """)
+    df_stock = pd.read_sql(query_stock, engine,
+                           params={"start_date": start_date, "end_date": end_date})
+    df_stock.sort_values(["code", "valuation_date"], inplace=True, ignore_index=True)
+
+    # 指数行情: valuation_date, code, pct_chg
+    query_index = sqlalchemy.text("""
+        SELECT valuation_date, code, pct_chg
+        FROM data_index
+        WHERE valuation_date BETWEEN :start_date AND :end_date
+    """)
+    df_index = pd.read_sql(query_index, engine,
+                           params={"start_date": start_date, "end_date": end_date})
+    df_index.sort_values(["code", "valuation_date"], inplace=True, ignore_index=True)
+
+    return (df_stock, None, None, None, None, None, df_index)
+
+
+# ============================================================
+# 交易日工具
+# ============================================================
+
+# 模块级缓存: 完整交易日历 (首次调用时加载)
+_FULL_CALENDAR = None
+
+
+def _ensure_calendar():
+    """确保交易日历已加载到缓存"""
+    global _FULL_CALENDAR
+    if _FULL_CALENDAR is None:
+        engine = get_engine("market")
+        query = sqlalchemy.text("""
+            SELECT valuation_date
+            FROM chinesevaluationdate
+            ORDER BY valuation_date
+        """)
+        df = pd.read_sql(query, engine)
+        _FULL_CALENDAR = sorted(df["valuation_date"].astype(str).tolist())
+    return _FULL_CALENDAR
+
+
+def next_workday(date_str: str) -> str:
+    """
+    取下一个交易日
+
+    Parameters
+    ----------
+    date_str : 日期字符串, 如 "2025-12-31"
+
+    Returns
+    -------
+    str : 下一个交易日, 如 "2026-01-02"
+    """
+    cal = _ensure_calendar()
+    # 如果 date_str 是交易日，取其后一天
+    # 如果不是交易日，取第一个 >= date_str 的交易日
+    try:
+        idx = cal.index(date_str)
+        if idx + 1 < len(cal):
+            return cal[idx + 1]
+        return date_str
+    except ValueError:
+        # date_str 不在日历中，取第一个 > date_str 的交易日
+        for d in cal:
+            if d > date_str:
+                return d
+        return date_str
+
+
+def last_workday(date_str: str) -> str:
+    """
+    取上一个交易日
+
+    Parameters
+    ----------
+    date_str : 日期字符串, 如 "2025-01-02"
+
+    Returns
+    -------
+    str : 上一个交易日, 如 "2024-12-31"
+    """
+    cal = _ensure_calendar()
+    # 取最后一个 < date_str 的交易日
+    result = None
+    for d in cal:
+        if d < date_str:
+            result = d
+        else:
+            break
+    return result if result else date_str

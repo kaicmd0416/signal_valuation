@@ -9,29 +9,24 @@
 - 换手率与手续费统计
 - 分层超额净值走势图
 - 多空组合净值分析
+- Top组合回测（全市场打分最高的 top N 只股票等权组合）
 """
 
 import os
-import sys
 import pandas as pd
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from scipy import stats
+
 
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-path = os.getenv('GLOBAL_TOOLSFUNC_new')
-sys.path.append(path)
-import global_dic as glv
-import global_tools as gt
-from PDF.PDFCreator import PDFCreator
-
-from backtest import SignalAnalysis
-from data_prepare import load_config
+from .PDF.PDFCreator import PDFCreator
+from .backtest import SignalAnalysis
+from .data_prepare import load_config, next_workday
 
 # 指数简称 → 中文名映射
 INDEX_MAP = {
@@ -39,6 +34,7 @@ INDEX_MAP = {
     "zz500": "中证500",
     "zz1000": "中证1000",
     "zz2000": "中证2000",
+    "zzA500": "中证A500",
 }
 
 
@@ -362,6 +358,154 @@ def plot_long_short(df_ls: pd.DataFrame, title: str, save_path: str):
 # PDF 报告生成
 # ============================================================
 
+def _calc_top_portfolio(df_top, df_stock, df_index_ret, index_name,
+                        start_date, end_date, output_dir, signal_name,
+                        top_n_extra):
+    """
+    全市场打分最高的 top N 只股票做等权组合回测
+
+    Returns
+    -------
+    dict : {"summary": dict, "df_yearly": DataFrame, "df_daily": DataFrame,
+            "fig_path": str}
+    """
+    from .backtest import INDEX_CN_MAP, INDEX_CODE_MAP
+
+    index_cn = INDEX_CN_MAP.get(index_name, index_name)
+
+    # 等权持仓
+    df_hold = df_top[["valuation_date", "code"]].copy()
+    df_hold["valuation_date"] = df_hold["valuation_date"].astype(str)
+    df_hold["weight"] = df_hold.groupby("valuation_date")["code"].transform(
+        lambda x: 1.0 / len(x)
+    )
+
+    # 匹配个股收益
+    df_ret = df_stock[["valuation_date", "code", "close", "pre_close"]].copy()
+    df_ret["valuation_date"] = df_ret["valuation_date"].astype(str)
+    df_ret["pct_chg"] = (df_ret["close"] - df_ret["pre_close"]) / df_ret["pre_close"]
+    df_calc = df_hold.merge(
+        df_ret[["valuation_date", "code", "pct_chg"]],
+        on=["valuation_date", "code"], how="left",
+    )
+    df_calc.dropna(subset=["pct_chg"], inplace=True)
+
+    # 组合日收益
+    df_calc["weighted_return"] = df_calc["weight"] * df_calc["pct_chg"]
+    df_daily = df_calc.groupby("valuation_date")["weighted_return"].sum().reset_index()
+    df_daily.rename(columns={"weighted_return": "portfolio_return"}, inplace=True)
+    df_daily = df_daily[df_daily["valuation_date"] <= end_date].copy()
+    df_daily.sort_values("valuation_date", inplace=True)
+
+    # 换手率
+    dates_sorted = sorted(df_hold["valuation_date"].unique())
+    turnover_list = []
+    for i in range(1, len(dates_sorted)):
+        prev_codes = set(df_hold[df_hold["valuation_date"] == dates_sorted[i-1]]["code"])
+        curr_codes = set(df_hold[df_hold["valuation_date"] == dates_sorted[i]]["code"])
+        n_curr = len(curr_codes)
+        n_changed = len(curr_codes - prev_codes)
+        turnover_list.append({
+            "valuation_date": dates_sorted[i],
+            "turnover": n_changed / n_curr if n_curr > 0 else 0,
+        })
+    df_turnover = pd.DataFrame(turnover_list)
+
+    df_daily = df_daily.merge(df_turnover, on="valuation_date", how="left")
+    df_daily["turnover"].fillna(0, inplace=True)
+    df_daily["fee"] = df_daily["turnover"] * 0.00085
+    df_daily["net_return"] = df_daily["portfolio_return"] - df_daily["fee"]
+
+    # 指数收益
+    index_code = INDEX_CODE_MAP.get(index_cn)
+    if index_code and not df_index_ret.empty:
+        df_idx = df_index_ret[df_index_ret["code"] == index_code][
+            ["valuation_date", "pct_chg"]
+        ].copy()
+        df_idx["valuation_date"] = df_idx["valuation_date"].astype(str)
+        df_idx.rename(columns={"pct_chg": "index_return"}, inplace=True)
+        df_daily = df_daily.merge(df_idx, on="valuation_date", how="left")
+        df_daily["index_return"].fillna(0, inplace=True)
+    else:
+        df_daily["index_return"] = 0
+
+    df_daily["excess_return"] = df_daily["portfolio_return"] - df_daily["index_return"]
+    df_daily["excess_net_return"] = df_daily["net_return"] - df_daily["index_return"]
+    df_daily["cum_excess"] = (1 + df_daily["excess_return"]).cumprod()
+    df_daily["cum_excess_net"] = (1 + df_daily["excess_net_return"]).cumprod()
+
+    # 统计
+    total_excess = df_daily["cum_excess"].iloc[-1] - 1
+    total_excess_net = df_daily["cum_excess_net"].iloc[-1] - 1
+    n_days = len(df_daily)
+    ann_excess = total_excess * 252 / n_days
+    ann_excess_net = total_excess_net * 252 / n_days
+    ann_vol = df_daily["excess_return"].std() * np.sqrt(252)
+    sharpe = ann_excess / ann_vol if ann_vol > 0 else 0
+    ann_turnover = df_daily["turnover"].mean() * 252
+    ann_fee = df_daily["fee"].mean() * 252 * 100
+    n_stocks_median = int(df_hold.groupby("valuation_date")["code"].count().median())
+
+    summary = {
+        "每日持仓数(中位数)": n_stocks_median,
+        "累计超额(扣费前%)": round(total_excess * 100, 2),
+        "累计超额(扣费后%)": round(total_excess_net * 100, 2),
+        "年化超额(扣费前%)": round(ann_excess * 100, 2),
+        "年化超额(扣费后%)": round(ann_excess_net * 100, 2),
+        "年化波动率%": round(ann_vol * 100, 2),
+        "夏普比率": round(sharpe, 2),
+        "年化换手率(倍)": round(ann_turnover, 2),
+        "年化手续费%": round(ann_fee, 2),
+    }
+
+    # 年度收益
+    df_daily["year"] = df_daily["valuation_date"].str[:4]
+    yearly_rows = []
+    for year, sub in df_daily.groupby("year"):
+        yr_excess = (1 + sub["excess_return"]).prod() - 1
+        yr_excess_net = (1 + sub["excess_net_return"]).prod() - 1
+        yearly_rows.append({
+            "年度": year,
+            "超额收益(扣费前%)": round(yr_excess * 100, 2),
+            "超额收益(扣费后%)": round(yr_excess_net * 100, 2),
+        })
+    yearly_rows.append({
+        "年度": "全区间",
+        "超额收益(扣费前%)": round(total_excess * 100, 2),
+        "超额收益(扣费后%)": round(total_excess_net * 100, 2),
+    })
+    df_yearly = pd.DataFrame(yearly_rows)
+
+    # 画图
+    fig, ax = plt.subplots(figsize=(14, 7))
+    dates = pd.to_datetime(df_daily["valuation_date"])
+    ax.plot(dates, df_daily["cum_excess"], label="超额净值(扣费前)", linewidth=2)
+    ax.plot(dates, df_daily["cum_excess_net"], label="超额净值(扣费后)",
+            linewidth=2, linestyle="--")
+    ax.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.8)
+    ax.set_title(f"Top组合超额净值 - {index_cn} (全市场top{top_n_extra}等权)",
+                 fontsize=16)
+    ax.set_xlabel("日期", fontsize=13)
+    ax.set_ylabel("超额净值", fontsize=13)
+    ax.legend(loc="best", fontsize=12)
+    ax.grid(True, alpha=0.3)
+    ax.xaxis.set_major_locator(mdates.MonthLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    fig.autofmt_xdate(rotation=45)
+    plt.tight_layout()
+    fig_path = os.path.join(output_dir,
+                            f"{signal_name}_{index_name}_top{top_n_extra}_excess_nav.png")
+    plt.savefig(fig_path, dpi=150)
+    plt.close()
+
+    return {
+        "summary": summary,
+        "df_yearly": df_yearly,
+        "df_daily": df_daily,
+        "fig_path": fig_path,
+    }
+
+
 def generate_report(signal_name: str, start_date: str, end_date: str,
                     n_groups: int = 5,
                     df_factor: pd.DataFrame = None,
@@ -372,12 +516,16 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
                     df_calendar: pd.DataFrame = None,
                     df_st: pd.DataFrame = None,
                     df_notrade: pd.DataFrame = None,
-                    date_mode: str = "target_date"):
+                    date_mode: str = "target_date",
+                    df_top: pd.DataFrame = None,
+                    top_n_extra: int = 0,
+                    top_n: int = 0):
     """
     生成因子分层回测 PDF 报告
 
     一份PDF包含所有指数的回测结果。每个指数包含:
     IC/IR分析、分层超额收益(扣费前/后)、换手率、超额净值走势、多空组合。
+    Top组合回测: df_top方式(合成因子全市场选股) 或 top_n方式(单因子成分内选股)。
 
     Parameters
     ----------
@@ -392,6 +540,9 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
     output_base  : 输出根目录（默认从config.yaml读取）
     df_calendar  : 交易日历（可选，加速持仓日映射）
     date_mode    : "target_date" | "available_date"
+    df_top       : 全市场top N组合持仓 [valuation_date, code, final_score]（可选，合成因子用）
+    top_n_extra  : Top组合选股数量-合成因子用（如200），用于标题显示
+    top_n        : Top组合选股数量-单因子用（如50），从成分内选因子值最高的N只
     """
     if output_base is None:
         output_base = load_config().get("output", {}).get(
@@ -406,6 +557,9 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
     pdf = PDFCreator(pdf_path)
     pdf.title(f"<b>{signal_name} 因子分层回测报告</b>")
     pdf.text(f"回测区间: {start_date} ~ {end_date}，分组数: {n_groups}")
+
+    # 收集各指数的回测数据，供Excel复用
+    excel_data = {}
 
     for index_name in index_list:
         index_cn = INDEX_MAP.get(index_name, index_name)
@@ -468,7 +622,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             plot_ic(df_ic, f"{signal_name} - {index_cn} Rank IC", fig_ic_path)
             pdf.image(fig_ic_path)
 
-        # ========== 2. 年度分层超额收益（扣费前）==========
+        # ========== 2. 年度分层超额收益（扣费前） ==========
         pdf.h1(f"<b>{index_cn} - 年度分层超额收益-扣费前(%)</b>")
         df_yearly = calc_yearly_excess(df_info)
 
@@ -486,7 +640,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             table_data.append([str(idx)] + [str(v) for v in row.tolist()])
         pdf.table(table_data, highlight_first_row=False)
 
-        # ========== 2.5 年度分层超额收益（扣费后）==========
+        # ========== 3. 年度分层超额收益（扣费后） ==========
         pdf.h1(f"<b>{index_cn} - 年度分层超额收益-扣费后(%)</b>")
         pdf.text("手续费: 双边万分之8.5")
         df_yearly_net = calc_yearly_excess_net(df_info)
@@ -504,7 +658,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             table_data_net.append([str(idx)] + [str(v) for v in row.tolist()])
         pdf.table(table_data_net, highlight_first_row=False)
 
-        # ========== 3. 换手率统计 ==========
+        # ========== 4. 换手率统计 ==========
         tv_tables = calc_yearly_turnover(df_info)
 
         def _df_to_table(df_pivot, title_suffix):
@@ -522,27 +676,27 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
         pdf.table(_df_to_table(tv_tables["annualized_fee"], "年化手续费"),
                   highlight_first_row=False)
 
-        # ========== 4. 分层超额净值走势图（扣费前）==========
+        # ========== 5. 分层超额净值走势图（扣费前） ==========
         pdf.h1(f"<b>{index_cn} - 分层超额净值走势（扣费前）</b>")
         df_nav = calc_excess_nav(df_info)
         fig_nav_path = os.path.join(output_dir, f"{signal_name}_{index_name}_excess_nav.png")
         plot_excess_nav(df_nav, f"{signal_name} - {index_cn} 分层超额净值（扣费前）", fig_nav_path)
         pdf.image(fig_nav_path)
 
-        # ========== 4.5 分层超额净值走势图（扣费后）==========
+        # ========== 6. 分层超额净值走势图（扣费后） ==========
         pdf.h1(f"<b>{index_cn} - 分层超额净值走势（扣费后）</b>")
         df_nav_net = calc_excess_nav_net(df_info)
         fig_nav_net_path = os.path.join(output_dir, f"{signal_name}_{index_name}_excess_nav_net.png")
         plot_excess_nav(df_nav_net, f"{signal_name} - {index_cn} 分层超额净值（扣费后）", fig_nav_net_path)
         pdf.image(fig_nav_net_path)
 
-        # ========== 4.6 扣费前后对比图（Top vs Bottom）==========
+        # ========== 7. 扣费前后对比图（Top vs Bottom） ==========
         fig_cmp_path = os.path.join(output_dir, f"{signal_name}_{index_name}_nav_compare.png")
         plot_excess_nav_compare(df_nav, df_nav_net,
                                 f"{signal_name} - {index_cn} 扣费前后超额净值对比", fig_cmp_path)
         pdf.image(fig_cmp_path)
 
-        # ========== 5. 多空组合净值 ==========
+        # ========== 8. 多空组合净值 ==========
         pdf.h1(f"<b>{index_cn} - 多空组合 (Top-Bottom)</b>")
         df_ls = calc_long_short(df_info, n_groups)
         if df_ls.empty:
@@ -565,20 +719,260 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             plot_long_short(df_ls, f"{signal_name} - {index_cn} 多空净值 (group_{n_groups} - group_1)", fig_ls_path)
             pdf.image(fig_ls_path)
 
+        # ========== 9. Top组合回测（可选） ==========
+        # 两种模式:
+        #   A) df_top + top_n_extra: 合成因子全市场选股 (combine flow)
+        #   B) top_n + df_factor: 单因子全市场选打分最高的N只
+        top_result = None
+        _top_df = None
+        _top_n_display = 0
+        _top_label = ""
+
+        if df_top is not None and not df_top.empty and top_n_extra > 0:
+            # 模式A: 合成因子全市场选股
+            _top_df = df_top
+            _top_n_display = top_n_extra
+            _top_label = f"全市场top{top_n_extra}等权"
+        elif top_n > 0 and df_factor is not None and not df_factor.empty:
+            # 模式B: 单因子全市场选打分最高的N只
+            df_f = df_factor[["valuation_date", "code", "final_score"]].copy()
+            # 如果是 available_date 模式，需要映射到持仓日
+            if date_mode == "available_date" and df_calendar is not None and not df_calendar.empty:
+                cal_map = df_calendar.set_index(
+                    df_calendar["valuation_date"].astype(str)
+                )["next_workday"].astype(str)
+                df_f["valuation_date"] = df_f["valuation_date"].astype(str).map(cal_map)
+                df_f.dropna(subset=["valuation_date"], inplace=True)
+            else:
+                df_f["valuation_date"] = df_f["valuation_date"].astype(str)
+            _top_df = (
+                df_f
+                .groupby("valuation_date", group_keys=False)
+                .apply(lambda g: g.nlargest(top_n, "final_score"))
+                .reset_index(drop=True)
+            )
+            _top_n_display = top_n
+            _top_label = f"全市场top{top_n}等权"
+
+        if _top_df is not None and not _top_df.empty and _top_n_display > 0:
+            pdf.h1(f"<b>{index_cn} - Top组合 ({_top_label})</b>")
+            try:
+                top_result = _calc_top_portfolio(
+                    _top_df, df_stock, df_index_ret, index_name,
+                    start_date, end_date, output_dir, signal_name,
+                    _top_n_display,
+                )
+                # 汇总表
+                top_summary = top_result["summary"]
+                top_table = [["指标", "数值"]]
+                for k, v in top_summary.items():
+                    top_table.append([k, str(v)])
+                pdf.table(top_table, highlight_first_row=False)
+
+                # 年度收益表
+                pdf.h2(f"<b>Top组合年度超额收益(%)</b>")
+                df_top_yearly = top_result["df_yearly"]
+                top_yearly_table = [df_top_yearly.columns.tolist()]
+                for _, row in df_top_yearly.iterrows():
+                    top_yearly_table.append([str(x) for x in row.tolist()])
+                pdf.table(top_yearly_table)
+
+                # 超额净值图
+                pdf.image(top_result["fig_path"])
+
+                print(f"  Top组合已添加到PDF报告")
+            except Exception as e:
+                pdf.text(f"Top组合回测失败: {e}")
+                print(f"  Top组合回测失败: {e}")
+
+        # 收集Excel数据（复用本轮已计算的结果）
+        excel_data[index_name] = {
+            "df_info": df_info,
+            "df_ic": df_ic if not df_ic.empty else None,
+            "df_yearly": df_yearly,
+            "df_yearly_net": df_yearly_net,
+            "tv_tables": tv_tables,
+            "df_nav": df_nav,
+            "df_nav_net": df_nav_net,
+            "top_result": top_result,
+            "top_label": f"Top组合 ({_top_label})" if _top_label else "",
+        }
+
     pdf.build()
     print(f"\n报告已生成: {pdf_path}")
+
+    # ============================================================
+    # Excel 报告输出（复用PDF阶段已计算的数据，不重复回测）
+    # ============================================================
+    excel_path = os.path.join(output_dir, f"{signal_name}_分层回测数据.xlsx")
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        for index_name, data in excel_data.items():
+            index_cn = INDEX_MAP.get(index_name, index_name)
+            sheet_name = index_cn[:31]
+            row_offset = 0
+            df_info = data["df_info"]
+            df_ic = data["df_ic"]
+            df_yearly = data["df_yearly"]
+            df_yearly_net = data["df_yearly_net"]
+            tv_tables = data["tv_tables"]
+
+            # --- IC/IR ---
+            if df_ic is not None:
+                ic_summary = calc_ic_summary(df_ic)
+                df_ic_summary = pd.DataFrame(
+                    list(ic_summary.items()), columns=["指标", "数值"]
+                )
+                df_ic_summary.to_excel(writer, sheet_name=sheet_name,
+                                       startrow=row_offset, index=False)
+                row_offset += len(df_ic_summary) + 2
+
+                df_yearly_ic = calc_yearly_ic(df_ic)
+                df_yearly_ic.to_excel(writer, sheet_name=sheet_name,
+                                      startrow=row_offset, index=False)
+                row_offset += len(df_yearly_ic) + 2
+
+            # --- 年度分层超额收益（扣费前）---
+            label = pd.DataFrame([["分层超额收益-扣费前(%)"]], columns=[""])
+            label.to_excel(writer, sheet_name=sheet_name,
+                           startrow=row_offset, index=False)
+            row_offset += 1
+            df_yearly.to_excel(writer, sheet_name=sheet_name,
+                               startrow=row_offset)
+            row_offset += len(df_yearly) + 2
+
+            # --- 年度分层超额收益（扣费后）---
+            label = pd.DataFrame([["分层超额收益-扣费后(%)"]], columns=[""])
+            label.to_excel(writer, sheet_name=sheet_name,
+                           startrow=row_offset, index=False)
+            row_offset += 1
+            df_yearly_net.to_excel(writer, sheet_name=sheet_name,
+                                   startrow=row_offset)
+            row_offset += len(df_yearly_net) + 2
+
+            # --- 换手率统计 ---
+            label = pd.DataFrame([["年化单边换手率(倍)"]], columns=[""])
+            label.to_excel(writer, sheet_name=sheet_name,
+                           startrow=row_offset, index=False)
+            row_offset += 1
+            tv_tables["annualized_turnover"].to_excel(
+                writer, sheet_name=sheet_name, startrow=row_offset)
+            row_offset += len(tv_tables["annualized_turnover"]) + 2
+
+            label = pd.DataFrame([["年化手续费(%, 双边万分之8.5)"]], columns=[""])
+            label.to_excel(writer, sheet_name=sheet_name,
+                           startrow=row_offset, index=False)
+            row_offset += 1
+            tv_tables["annualized_fee"].to_excel(
+                writer, sheet_name=sheet_name, startrow=row_offset)
+            row_offset += len(tv_tables["annualized_fee"]) + 2
+
+            # --- 多空组合 ---
+            df_ls = calc_long_short(df_info, n_groups)
+            if not df_ls.empty:
+                ls_ret = df_ls["ls_nav"].iloc[-1] - 1
+                ls_annual = ls_ret * 252 / len(df_ls)
+                ls_vol = df_ls["long_short"].std() * np.sqrt(252)
+                ls_sharpe = ls_annual / ls_vol if ls_vol > 0 else 0
+                df_ls_summary = pd.DataFrame({
+                    "指标": ["累计多空收益(%)", "年化多空收益(%)",
+                           "年化波动率(%)", "夏普比率"],
+                    "数值": [round(ls_ret * 100, 2), round(ls_annual * 100, 2),
+                           round(ls_vol * 100, 2), round(ls_sharpe, 2)],
+                })
+                label = pd.DataFrame([["多空组合(Top-Bottom)"]], columns=[""])
+                label.to_excel(writer, sheet_name=sheet_name,
+                               startrow=row_offset, index=False)
+                row_offset += 1
+                df_ls_summary.to_excel(writer, sheet_name=sheet_name,
+                                       startrow=row_offset, index=False)
+                row_offset += len(df_ls_summary) + 2
+
+            # --- Top组合 ---
+            top_result = data.get("top_result")
+            top_label = data.get("top_label", f"Top组合 (top{top_n_extra or top_n})")
+            if top_result is not None:
+                label = pd.DataFrame([[top_label]], columns=[""])
+                label.to_excel(writer, sheet_name=sheet_name,
+                               startrow=row_offset, index=False)
+                row_offset += 1
+                df_top_summary = pd.DataFrame(
+                    list(top_result["summary"].items()), columns=["指标", "数值"]
+                )
+                df_top_summary.to_excel(writer, sheet_name=sheet_name,
+                                        startrow=row_offset, index=False)
+                row_offset += len(df_top_summary) + 2
+
+                label = pd.DataFrame([["Top组合年度超额收益(%)"]], columns=[""])
+                label.to_excel(writer, sheet_name=sheet_name,
+                               startrow=row_offset, index=False)
+                row_offset += 1
+                top_result["df_yearly"].to_excel(writer, sheet_name=sheet_name,
+                                                  startrow=row_offset, index=False)
+
+        # ============================================================
+        # 时序数据 sheet
+        # ============================================================
+
+        for index_name, data in excel_data.items():
+            index_cn = INDEX_MAP.get(index_name, index_name)
+            df_info = data["df_info"]
+            df_ic = data["df_ic"]
+            df_nav = data["df_nav"]
+            df_nav_net = data["df_nav_net"]
+
+            # --- 每日IC序列 ---
+            if df_ic is not None:
+                sheet_ic = f"{index_cn}_每日IC"[:31]
+                df_ic_out = df_ic.copy()
+                df_ic_out["累计IC"] = df_ic_out["rank_IC"].cumsum()
+                df_ic_out.to_excel(writer, sheet_name=sheet_ic, index=False)
+
+            # --- 分层超额净值（扣费前+扣费后合并） ---
+            sheet_nav = f"{index_cn}_超额净值"[:31]
+            df_nav_out = df_nav.copy()
+            df_nav_out.columns = [f"{c}_扣费前" for c in df_nav_out.columns]
+            df_nav_net_out = df_nav_net.copy()
+            df_nav_net_out.columns = [f"{c}_扣费后" for c in df_nav_net_out.columns]
+            df_nav_all = pd.concat([df_nav_out, df_nav_net_out], axis=1)
+            df_nav_all.index.name = "valuation_date"
+            df_nav_all.to_excel(writer, sheet_name=sheet_nav)
+
+            # --- 多空净值序列 ---
+            df_ls = calc_long_short(df_info, n_groups)
+            if not df_ls.empty:
+                sheet_ls = f"{index_cn}_多空净值"[:31]
+                df_ls_out = df_ls[["valuation_date", "top", "bottom",
+                                   "long_short", "ls_nav"]].copy()
+                df_ls_out.columns = ["日期", "Top组超额", "Bottom组超额",
+                                     "多空日收益", "多空累计净值"]
+                df_ls_out.to_excel(writer, sheet_name=sheet_ls, index=False)
+
+            # --- Top组合每日明细 ---
+            top_result = data.get("top_result")
+            if top_result is not None:
+                sheet_top = f"{index_cn}_Top组合"[:31]
+                df_top_daily = top_result["df_daily"][[
+                    "valuation_date", "portfolio_return", "index_return",
+                    "excess_return", "excess_net_return", "turnover", "fee",
+                    "cum_excess", "cum_excess_net",
+                ]].copy()
+                df_top_daily.columns = [
+                    "日期", "组合收益", "指数收益", "超额(扣费前)", "超额(扣费后)",
+                    "换手率", "手续费", "累计超额净值(扣费前)", "累计超额净值(扣费后)",
+                ]
+                df_top_daily.to_excel(writer, sheet_name=sheet_top, index=False)
+
+    print(f"Excel已生成: {excel_path}")
     return pdf_path
 
 
 if __name__ == "__main__":
-    from data_prepare import get_factor_data, get_index_component, get_market_data
-
-    glv.init()
+    from core.data_prepare import get_factor_data, get_index_component, get_market_data
 
     start_date, end_date = "2025-01-02", "2025-12-31"
     index_list = ["hs300", "zz500", "zz1000"]
 
-    mkt_end = gt.next_workday_calculate(end_date)
+    mkt_end = next_workday(end_date)
     market_data = get_market_data(start_date, mkt_end)
     df_stock, df_index_ret = market_data[0], market_data[6]
     index_data = {idx: get_index_component(start_date, end_date, idx) for idx in index_list}

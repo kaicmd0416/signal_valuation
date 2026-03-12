@@ -96,17 +96,22 @@ def _standardize_df(df: pd.DataFrame, schema: dict) -> pd.DataFrame:
 # 对外接口
 # ============================================================
 
-def save_combine_score(df: pd.DataFrame):
+def save_combine_score(df: pd.DataFrame, mode: str = "prod"):
     """
-    将合成因子打分写入 combine_score 表
+    将合成因子打分写入数据库
+
+    mode="prod" → combine_score 表
+    mode="test" → combine_score_test 表
 
     逻辑: 先按 score_name 删除对应日期的旧数据，再 INSERT 新数据。
 
     Parameters
     ----------
-    df : DataFrame[valuation_date, code, score_name, final_score]
+    df   : DataFrame[valuation_date, code, score_name, final_score]
+    mode : "prod" 或 "test"
     """
-    cfg = _load_db_saving_config("CombineScore")
+    task_name = "CombineScoreProd" if mode == "prod" else "CombineScoreTest"
+    cfg = _load_db_saving_config(task_name)
     db_url = cfg["db_url"]
     table_name = cfg["table_name"].lower()
     schema = cfg["schema"]

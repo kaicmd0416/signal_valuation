@@ -19,7 +19,7 @@ backtest:
   start_date: "2023-07-01"
   end_date: "2026-03-10"
   n_groups: 5
-  top_n: 200
+  stock_number: 500
 
 weight_method: "two_level_ic"
 ic_window: 60

@@ -223,7 +223,7 @@ def run_single_backtest(factors=None, index_list=None,
 
 
 def run_combine_history(index_list=None, start_date=None, end_date=None,
-                        backtest=True, mode="test"):
+                        backtest=True, mode="test", is_sql=False):
     """
     历史区间因子合成
 
@@ -237,6 +237,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
     end_date    : 结束日期, None则从配置读取
     backtest    : True时做分层回测+生成PDF/Excel报告
     mode        : "test" 或 "prod"，决定读取哪个配置文件
+    is_sql      : True时入库combine_score表 (需配合mode="prod")
 
     Returns
     -------
@@ -248,10 +249,10 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
     start_date = start_date or bt["start_date"]
     end_date = end_date or bt["end_date"]
     n_groups = bt["n_groups"]
-    top_n_extra = bt.get("top_n", 200)
+    stock_number = bt["stock_number"]
     weight_method = combine_cfg.get("weight_method", "equal")
-    ic_window = combine_cfg.get("ic_window", 20)
-    smooth_window = combine_cfg.get("smooth_window", 1)
+    ic_window = combine_cfg.get("ic_window", 60)
+    smooth_window = combine_cfg.get("smooth_window", 5)
     date_mode = combine_cfg.get("date_mode", "target_date")
 
     # 确定要跑的指数
@@ -317,7 +318,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
             ic_window=ic_window,
             date_mode=date_mode,
             df_calendar=shared["df_calendar"],
-            top_n_extra=top_n_extra if backtest else 0,
+            top_n_extra=stock_number if backtest else 0,
             smooth_window=smooth_window,
             df_st=shared["df_st"],
             df_notrade=shared["df_notrade"],
@@ -341,11 +342,11 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
             # 构建 top 组合
             df_top = None
             if df_fm_scores is not None and not df_fm_scores.empty:
-                print(f"\n  构建 top 组合: 全市场打分最高 top{top_n_extra}")
+                print(f"\n  构建 top 组合: 全市场打分最高 top{stock_number}")
                 df_top = (
                     df_fm_scores
                     .groupby("valuation_date", group_keys=False)
-                    .apply(lambda g: g.nlargest(top_n_extra, "final_score"))
+                    .apply(lambda g: g.nlargest(stock_number, "final_score"))
                     .reset_index(drop=True)
                 )
                 n_top_dates = df_top["valuation_date"].nunique()
@@ -373,16 +374,17 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
                 df_notrade=shared["df_notrade"],
                 date_mode=date_mode,
                 df_top=df_top,
-                top_n_extra=top_n_extra,
+                top_n_extra=stock_number,
                 mode=mode,
             )
             timings[f"{index_name}.回测+报告"] = time.time() - t0
 
-        # 入库 (仅 prod 模式)
-        if mode == "prod":
+        # 入库 (需 prod 模式 + is_sql=True)
+        if is_sql:
             t0 = time.time()
-            print(f"\n  入库: {output_name} → combine_score 表")
-            save_combine_score(df_combined)
+            table_label = "combine_score" if mode == "prod" else "combine_score_test"
+            print(f"\n  入库: {output_name} → {table_label} 表")
+            save_combine_score(df_combined, mode=mode)
             timings[f"{index_name}.入库"] = time.time() - t0
 
     # 耗时汇总
@@ -404,7 +406,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 # 功能3: 单日因子合成更新
 # ============================================================
 
-def run_combine_update(target_date, index_list=None, mode="prod"):
+def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
     """
     单日因子合成更新
 
@@ -416,6 +418,7 @@ def run_combine_update(target_date, index_list=None, mode="prod"):
     target_date : 目标持仓日 (T日), 格式 "YYYY-MM-DD"
     index_list  : 指数列表, None则从配置读取全部
     mode        : "test" 或 "prod"，决定读取哪个配置文件 (默认prod)
+    is_sql      : True时入库combine_score表 (需配合mode="prod")
 
     Returns
     -------
@@ -423,6 +426,8 @@ def run_combine_update(target_date, index_list=None, mode="prod"):
            只包含 target_date 当天的数据
     """
     combine_cfg = load_combine_by_index_config(mode=mode)
+    bt = combine_cfg["backtest"]
+    stock_number = bt["stock_number"]
     weight_method = combine_cfg.get("weight_method", "equal")
     ic_window = combine_cfg.get("ic_window", 60)
     smooth_window = combine_cfg.get("smooth_window", 5)
@@ -468,7 +473,7 @@ def run_combine_update(target_date, index_list=None, mode="prod"):
         print(f"\n合成: {output_name} (回溯 {lookback_start} ~ {target_date})")
         t0 = time.time()
 
-        df_combined = combine_factors_for_index(
+        result = combine_factors_for_index(
             lookback_start, target_date,
             index_name=index_name,
             index_cfg=index_cfg,
@@ -478,40 +483,65 @@ def run_combine_update(target_date, index_list=None, mode="prod"):
             ic_window=ic_window,
             date_mode=date_mode,
             df_calendar=shared["df_calendar"],
-            top_n_extra=0,  # 更新模式不需要全市场评分
+            top_n_extra=stock_number,
             smooth_window=smooth_window,
             df_st=shared["df_st"],
             df_notrade=shared["df_notrade"],
         )
         elapsed = time.time() - t0
 
+        # 拆分返回值
+        if isinstance(result, tuple):
+            df_combined, df_fm_scores = result
+        else:
+            df_combined, df_fm_scores = result, None
+
         if df_combined.empty:
             print(f"  {output_name} 合成为空，跳过")
             continue
 
-        # 只保留目标日期
-        df_target = df_combined[
-            df_combined["valuation_date"] == target_date
-        ].copy().reset_index(drop=True)
+        # 只保留最新日期
+        latest_date = df_combined["valuation_date"].max()
 
-        if df_target.empty:
-            # target_date 可能不是交易日，尝试取最近的日期
-            latest_date = df_combined["valuation_date"].max()
-            print(f"  警告: {target_date} 无数据，取最近日期 {latest_date}")
-            df_target = df_combined[
-                df_combined["valuation_date"] == latest_date
-            ].copy().reset_index(drop=True)
+        # 成分股评分
+        df_comp = df_combined[
+            df_combined["valuation_date"] == latest_date
+        ].copy()
+        n_comp = len(df_comp)
 
-        n_stocks = len(df_target)
-        print(f"  {output_name}: {target_date} 共 {n_stocks} 只股票"
+        # 非成分股补齐到 stock_number
+        df_output = df_comp.copy()
+        if df_fm_scores is not None and not df_fm_scores.empty:
+            df_fm_latest = df_fm_scores[
+                df_fm_scores["valuation_date"] == latest_date
+            ]
+            if not df_fm_latest.empty:
+                # 剔除已在成分股中的股票
+                comp_codes = set(df_comp["code"])
+                df_non_comp = df_fm_latest[
+                    ~df_fm_latest["code"].isin(comp_codes)
+                ]
+                # 取打分最高的补到 stock_number
+                n_extra = max(0, stock_number - n_comp)
+                if n_extra > 0 and not df_non_comp.empty:
+                    df_top_extra = df_non_comp.nlargest(n_extra, "final_score")
+                    df_output = pd.concat([df_comp, df_top_extra], ignore_index=True)
+
+        df_output["score_name"] = output_name
+        df_output = df_output[["valuation_date", "code", "score_name", "final_score"]].reset_index(drop=True)
+
+        n_total = len(df_output)
+        n_extra = n_total - n_comp
+        print(f"  {output_name}: 日期={latest_date}, 成分股={n_comp} + 非成分股={n_extra} = {n_total}"
               f" [{_fmt_elapsed(elapsed)}]")
 
-        results[index_name] = df_target
+        results[index_name] = df_output
 
-        # 入库 (仅 prod 模式)
-        if mode == "prod":
-            print(f"  入库: {output_name} → combine_score 表")
-            save_combine_score(df_target)
+        # 入库
+        if is_sql:
+            table_label = "combine_score" if mode == "prod" else "combine_score_test"
+            print(f"  入库: {output_name} → {table_label} 表 ({n_total}只)")
+            save_combine_score(df_output, mode=mode)
 
     # 汇总
     print(f"\n{'='*60}")
@@ -572,6 +602,8 @@ if __name__ == "__main__":
                            help="只合成不做回测")
     p_combine.add_argument("--mode", default="test", choices=["test", "prod"],
                            help="配置模式: test或prod (默认test)")
+    p_combine.add_argument("--sql", action="store_true",
+                           help="入库combine_score表 (需配合--mode prod)")
 
     # --- update: 单日更新 ---
     p_update = subparsers.add_parser("update", help="单日因子合成更新")
@@ -580,6 +612,8 @@ if __name__ == "__main__":
                           help="指数列表 (默认从combine配置读取)")
     p_update.add_argument("--mode", default="prod", choices=["test", "prod"],
                           help="配置模式: test或prod (默认prod)")
+    p_update.add_argument("--sql", action="store_true",
+                          help="入库combine_score表 (需配合--mode prod)")
 
     args = parser.parse_args()
 
@@ -606,6 +640,7 @@ if __name__ == "__main__":
             end_date=args.end,
             backtest=not args.no_backtest,
             mode=args.mode,
+            is_sql=args.sql,
         )
         # 打印返回结果摘要
         print(f"\n返回结果:")
@@ -619,6 +654,7 @@ if __name__ == "__main__":
             target_date=args.target_date,
             index_list=args.index,
             mode=args.mode,
+            is_sql=args.sql,
         )
 
     print(f"\n总耗时: {_fmt_elapsed(time.time() - total_start)}")

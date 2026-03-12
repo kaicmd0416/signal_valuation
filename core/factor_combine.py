@@ -258,46 +258,45 @@ def combine_factors_for_index(start_date: str, end_date: str,
         df_index_comp = get_index_component(start_date, end_date, index_name)
         print(f"  成分股加载完成: {len(df_index_comp)} 条, 耗时 {time.time()-t0:.1f}s")
 
-    # 构建成分股 (date, code) 用于过滤
+    # 构建成分股 (date, code) 用于过滤 — 日期维度: available_date
     comp_keys = df_index_comp[["valuation_date", "code"]].copy()
     comp_keys["valuation_date"] = comp_keys["valuation_date"].astype(str)
     n_comp_dates = comp_keys["valuation_date"].nunique()
     n_comp_stocks = int(comp_keys.groupby("valuation_date")["code"].count().median())
     print(f"  成分股: {n_comp_dates} 个交易日, 每日中位数 {n_comp_stocks} 只")
 
-    # --- 步骤1: 批量加载因子 + available_date映射 ---
+    # --- 步骤1: 批量加载因子, 内部统一用 available_date ---
     factor_names = [f["name"] for f in factor_list]
     print(f"\n批量加载 {len(factor_names)} 个因子 (单次SQL)...")
     t0 = time.time()
 
     if date_mode == "available_date":
-        # available_date 模式: DB date = available_date(T-1)
-        # 查询范围向前扩展，确保覆盖 start_date 对应的 T-1 信号
+        # available_date 模式: DB日期就是 available_date, 直接查询不映射
         query_start = last_workday(start_date)
         df_all_raw = get_factor_data_batch(query_start, end_date, factor_names)
     else:
+        # target_date 模式: DB日期是 target_date, 映射为 available_date (前一交易日)
         df_all_raw = get_factor_data_batch(start_date, end_date, factor_names)
 
     t_db = time.time() - t0
     print(f"  DB查询完成: {len(df_all_raw)} 条, 耗时 {t_db:.1f}s")
 
-    # available_date → target_date 映射 (取完信号后立即转换，后续统一用 target_date)
-    if date_mode == "available_date":
+    # target_date 模式: 映射为 available_date
+    if date_mode == "target_date":
         df_all_raw["valuation_date"] = df_all_raw["valuation_date"].astype(str)
         if df_calendar is not None and not df_calendar.empty:
-            cal_map = df_calendar.set_index(
-                df_calendar["valuation_date"].astype(str)
-            )["next_workday"].astype(str)
-            df_all_raw["valuation_date"] = df_all_raw["valuation_date"].map(cal_map)
+            # target_date → available_date (前一交易日)
+            reverse_cal = df_calendar.set_index(
+                df_calendar["next_workday"].astype(str)
+            )["valuation_date"].astype(str)
+            df_all_raw["valuation_date"] = df_all_raw["valuation_date"].map(reverse_cal)
         else:
-            # 无日历时用因子自身日期序列近似
             all_dates = sorted(df_all_raw["valuation_date"].unique())
-            date_shift = {all_dates[i]: all_dates[i + 1]
+            date_shift = {all_dates[i + 1]: all_dates[i]
                           for i in range(len(all_dates) - 1)}
             df_all_raw["valuation_date"] = df_all_raw["valuation_date"].map(date_shift)
         df_all_raw.dropna(subset=["valuation_date"], inplace=True)
-        n_mapped = len(df_all_raw)
-        print(f"  available_date → target_date 映射完成: {n_mapped} 条")
+        print(f"  target_date → available_date 映射完成: {len(df_all_raw)} 条")
 
     # --- 步骤2: 过滤成分股 + 剔除ST/涨跌停 ---
     print(f"\n过滤到 {index_name} 成分股...")
@@ -325,21 +324,10 @@ def combine_factors_for_index(start_date: str, end_date: str,
         print(f"使用外部传入的ST和涨跌停数据...")
     n_before = len(df_all_raw)
 
-    # ST/涨跌停的DB日期 = 事件发生日(T-1), 影响下一交易日(T)的交易
-    # 将事件日期映射到 target_date(T) 后再剔除
-    if df_calendar is not None and not df_calendar.empty:
-        _cal_map = df_calendar.set_index(
-            df_calendar["valuation_date"].astype(str)
-        )["next_workday"].astype(str)
-    else:
-        _cal_map = None
-
+    # ST/涨跌停: DB日期 = available_date, 与因子日期同维度, 直接匹配剔除
     if not df_st.empty:
         _df_st = df_st[["valuation_date", "code"]].copy()
         _df_st["valuation_date"] = _df_st["valuation_date"].astype(str)
-        if _cal_map is not None:
-            _df_st["valuation_date"] = _df_st["valuation_date"].map(_cal_map)
-            _df_st.dropna(subset=["valuation_date"], inplace=True)
         df_all_raw = df_all_raw.merge(
             _df_st,
             on=["valuation_date", "code"],
@@ -350,9 +338,6 @@ def combine_factors_for_index(start_date: str, end_date: str,
     if not df_notrade.empty:
         _df_notrade = df_notrade[["valuation_date", "code"]].copy()
         _df_notrade["valuation_date"] = _df_notrade["valuation_date"].astype(str)
-        if _cal_map is not None:
-            _df_notrade["valuation_date"] = _df_notrade["valuation_date"].map(_cal_map)
-            _df_notrade.dropna(subset=["valuation_date"], inplace=True)
         df_all_raw = df_all_raw.merge(
             _df_notrade,
             on=["valuation_date", "code"],

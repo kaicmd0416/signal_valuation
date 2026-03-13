@@ -120,6 +120,11 @@ def save_combine_score(df: pd.DataFrame, mode: str = "prod"):
 
     # 构建写入 DataFrame
     df_write = df[["valuation_date", "code", "score_name", "final_score"]].copy()
+
+    if df_write.empty:
+        print(f"  警告: 入库数据为空，跳过")
+        return
+
     df_write["update_time"] = datetime.now()
 
     # 标准化

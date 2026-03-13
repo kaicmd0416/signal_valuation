@@ -327,10 +327,10 @@ def combine_factors_for_index(start_date: str, end_date: str,
     if df_st is None or df_notrade is None:
         print(f"加载ST和涨跌停数据...")
         if df_st is None:
-            from data_prepare import get_st_stocks
+            from .data_prepare import get_st_stocks
             df_st = get_st_stocks(start_date, end_date)
         if df_notrade is None:
-            from data_prepare import get_notrade_stocks
+            from .data_prepare import get_notrade_stocks
             df_notrade = get_notrade_stocks(start_date, end_date)
     else:
         print(f"使用外部传入的ST和涨跌停数据...")
@@ -338,7 +338,7 @@ def combine_factors_for_index(start_date: str, end_date: str,
 
     # ST/涨跌停: DB日期 = available_date, 与因子日期同维度, 直接匹配剔除
     if not df_st.empty:
-        _df_st = df_st[["valuation_date", "code"]].copy()
+        _df_st = df_st[["valuation_date", "code"]].drop_duplicates().copy()
         _df_st["valuation_date"] = _df_st["valuation_date"].astype(str)
         df_all_raw = df_all_raw.merge(
             _df_st,
@@ -348,7 +348,7 @@ def combine_factors_for_index(start_date: str, end_date: str,
         df_all_raw = df_all_raw[df_all_raw["_st"] == "left_only"].drop(columns=["_st"])
 
     if not df_notrade.empty:
-        _df_notrade = df_notrade[["valuation_date", "code"]].copy()
+        _df_notrade = df_notrade[["valuation_date", "code"]].drop_duplicates().copy()
         _df_notrade["valuation_date"] = _df_notrade["valuation_date"].astype(str)
         df_all_raw = df_all_raw.merge(
             _df_notrade,

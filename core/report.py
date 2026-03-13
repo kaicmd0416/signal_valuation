@@ -483,7 +483,7 @@ def _calc_top_portfolio(df_top, df_stock, df_index_ret, index_name,
     ax.plot(dates, df_daily["cum_excess_net"], label="超额净值(扣费后)",
             linewidth=2, linestyle="--")
     ax.axhline(y=1.0, color="gray", linestyle=":", linewidth=0.8)
-    ax.set_title(f"Top组合超额净值 - {index_cn} (全市场top{top_n_extra}等权)",
+    ax.set_title(f"Top组合超额净值 - {index_cn} (非成分股top{top_n_extra}等权)",
                  fontsize=16)
     ax.set_xlabel("日期", fontsize=13)
     ax.set_ylabel("超额净值", fontsize=13)
@@ -736,9 +736,16 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
 
         if df_top is not None and not df_top.empty and top_n_extra > 0:
             # 模式A: 合成因子全市场选股
-            _top_df = df_top
+            _top_df = df_top.copy()
+            # df_top 的日期是 available_date, 需要映射到持仓日 (next_workday)
+            if date_mode == "available_date" and df_calendar is not None and not df_calendar.empty:
+                cal_map = df_calendar.set_index(
+                    df_calendar["valuation_date"].astype(str)
+                )["next_workday"].astype(str)
+                _top_df["valuation_date"] = _top_df["valuation_date"].astype(str).map(cal_map)
+                _top_df.dropna(subset=["valuation_date"], inplace=True)
             _top_n_display = top_n_extra
-            _top_label = f"全市场top{top_n_extra}等权"
+            _top_label = f"非成分股top{top_n_extra}等权"
         elif top_n > 0 and df_factor is not None and not df_factor.empty:
             # 模式B: 单因子全市场选top N只
             # 根据当前指数的IC符号决定方向

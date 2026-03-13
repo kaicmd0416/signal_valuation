@@ -408,28 +408,27 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 
         # 回测 + 报告
         if backtest:
-            # top组合: 从固定维度输出(df_fixed)中取打分最高的 (stock_number - 成分股数) 只等权
+            # top组合: 非成分股中打分最高的 N 只
             df_top = None
             if df_fixed is not None and not df_fixed.empty:
-                # 预计算每日成分股数, 避免重复扫描
                 comp_count_per_day = (
                     df_combined.groupby("valuation_date")["code"].count()
                     .to_dict()
                 )
-                df_top = (
-                    df_fixed
-                    .groupby("valuation_date", group_keys=False)
-                    .apply(lambda g: g.nlargest(
-                        max(0, stock_number - comp_count_per_day.get(g.name, 0)),
-                        "final_score"
-                    ))
-                    .reset_index(drop=True)
-                )
-                n_top_dates = df_top["valuation_date"].nunique()
-                n_top_median = int(
-                    df_top.groupby("valuation_date")["code"].count().median()
-                )
-                print(f"  top组合: {n_top_dates}天, 每日{n_top_median}只 (stock_number-成分股数 等权)")
+                parts_top = []
+                for d, grp in df_fixed.groupby("valuation_date"):
+                    comp_codes = comp_codes_by_date.get(d, set())
+                    df_non_comp = grp[~grp["code"].isin(comp_codes)]
+                    n_top = max(0, stock_number - comp_count_per_day.get(d, 0))
+                    if n_top > 0 and not df_non_comp.empty:
+                        parts_top.append(df_non_comp.nlargest(n_top, "final_score"))
+                if parts_top:
+                    df_top = pd.concat(parts_top, ignore_index=True)
+                    n_top_dates = df_top["valuation_date"].nunique()
+                    n_top_median = int(
+                        df_top.groupby("valuation_date")["code"].count().median()
+                    )
+                    print(f"  top组合: {n_top_dates}天, 每日{n_top_median}只 (非成分股打分最高 等权)")
 
             # 生成报告
             print(f"\n{'='*50}")
@@ -450,7 +449,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
                 df_notrade=shared["df_notrade"],
                 date_mode=date_mode,
                 df_top=df_top,
-                top_n_extra=stock_number,
+                top_n_extra=n_top_median if df_top is not None else stock_number,
                 mode=mode,
             )
             timings[f"{index_name}.回测+报告"] = time.time() - t0
@@ -486,7 +485,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 # 功能3: 单日因子合成更新
 # ============================================================
 
-def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=False):
+def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=True):
     """
     单日因子合成更新
 
@@ -498,7 +497,7 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Fa
     target_date : 目标持仓日 (T日), 格式 "YYYY-MM-DD", None则自动决策
     index_list  : 指数列表, None则从配置读取全部
     mode        : "test" 或 "prod"，决定读取哪个配置文件 (默认prod)
-    is_sql      : True时入库combine_score表 (需配合mode="prod")
+    is_sql      : True时入库 (prod→combine_score, test→combine_score_test)
 
     Returns
     -------
@@ -579,22 +578,24 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Fa
     print(f"{'='*60}")
     errors = []
 
-    # 2a. 检查因子数据的 available_date 是否覆盖 target_date
+    # 2a. 检查因子数据的日期是否覆盖 target_date
     factor_dates = sorted(df_all_factors["valuation_date"].astype(str).unique())
     if not factor_dates:
         errors.append("因子数据为空，没有任何日期的数据")
     else:
-        # available_date 模式下, target_date 的前一个交易日应该有数据
+        # available_date 模式: DB日期就是 available_date, 期望 last_workday(target_date)
+        # target_date 模式: DB日期就是 target_date, 期望 last_workday(target_date)
+        # 两种模式下都取 last_workday(target_date) 作为最新应有的日期
         expected_date = last_workday(target_date)
         if expected_date not in factor_dates:
             errors.append(
-                f"因子数据缺少 target_date 对应的 available_date: "
+                f"因子数据缺少目标日期数据: "
                 f"期望 {expected_date}, 实际最新日期 {factor_dates[-1]}"
             )
         else:
-            print(f"  [OK] 因子 available_date 覆盖正常 (最新: {factor_dates[-1]})")
+            print(f"  [OK] 因子数据覆盖正常 (最新: {factor_dates[-1]})")
 
-    # 2b. 检查每个因子在 target_date 对应的 available_date 是否有数据
+    # 2b. 检查每个因子在目标日期是否有数据
     if factor_dates:
         expected_date = last_workday(target_date)
         df_latest = df_all_factors[
@@ -732,6 +733,10 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Fa
                 if std > 0:
                     df_output["final_score"] = (df_output["final_score"] - mean) / std
 
+        if df_output.empty:
+            print(f"  {output_name}: 全市场打分为空，跳过")
+            continue
+
         df_output["score_name"] = output_name
         df_output = df_output[["valuation_date", "code", "score_name", "final_score"]].reset_index(drop=True)
 
@@ -818,8 +823,8 @@ if __name__ == "__main__":
                           help="指数列表 (默认从combine配置读取)")
     p_update.add_argument("--mode", default="prod", choices=["test", "prod"],
                           help="配置模式: test或prod (默认prod)")
-    p_update.add_argument("--sql", action="store_true",
-                          help="入库combine_score表 (需配合--mode prod)")
+    p_update.add_argument("--no-sql", action="store_true",
+                          help="不入库 (默认入库: prod→combine_score, test→combine_score_test)")
 
     args = parser.parse_args()
 
@@ -860,7 +865,7 @@ if __name__ == "__main__":
             target_date=args.target_date,
             index_list=args.index,
             mode=args.mode,
-            is_sql=args.sql,
+            is_sql=not args.no_sql,
         )
 
     print(f"\n总耗时: {_fmt_elapsed(time.time() - total_start)}")

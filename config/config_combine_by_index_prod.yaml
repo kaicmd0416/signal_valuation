@@ -17,35 +17,25 @@
 
 backtest:
   start_date: "2023-07-01"
-  end_date: "2026-03-10"
+  end_date: "2026-03-12"
   n_groups: 5
   stock_number: 500
 
-weight_method: "two_level_ic"
+weight_method: "equal"
 ic_window: 60
-smooth_window: 5    # MA5: G5=28.8%, G5净=23.4%, 换手16.1
+smooth_window: 1
 date_mode: "available_date"
 
 indices:
   hs300:
     output_name: "fm04_hs300"
-    clusters:
-      # --- 估值簇 (4因子, 单调性好, corr 0.7~0.93) ---
-      估值:
-        factors:
-          - name: "PE"
-            direction: 1       # IR=0.12, 单调性1.0, 多空夏普0.91
-          - name: "PCF"
-            direction: 1       # IR=0.16, 单调性0.9, G5正4/4年
-          - name: "PB"
-            direction: 1       # IR=0.15, 单调性0.9
-          - name: "PS"
-            direction: 1       # IR=0.12
-      # --- 独立因子 ---
-      流动性:
-        factors:
-          - name: "ILLIQ"
-            direction: -1      # IR=0.19, 全场最高
+    factors:
+      - name: "PCF"
+        direction: 1
+      - name: "PE"
+        direction: 1
+      - name: "ATER"
+        direction: 1
 
   zz500:
     output_name: "combine_zz500_available"

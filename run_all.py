@@ -12,7 +12,8 @@ Signal Valuation 统一入口
     python run_all.py single --factors PE PB           # 指定因子
     python run_all.py combine                          # 全部指数合成+回测
     python run_all.py combine --index zz500 --no-backtest
-    python run_all.py update 2026-03-10                # 单日更新
+    python run_all.py update                            # 自动决策日期更新
+    python run_all.py update 2026-03-10                # 指定日期更新
     python run_all.py update 2026-03-10 --index zz500
 
     # 作为模块导入
@@ -30,9 +31,9 @@ import pandas as pd
 
 from core.data_prepare import (
     load_config, load_signals_config, load_combine_by_index_config,
-    get_factor_data, get_index_component, get_market_data,
-    get_trading_calendar, get_st_stocks, get_notrade_stocks,
-    next_workday,
+    get_factor_data, get_factor_data_batch, get_index_component,
+    get_market_data, get_trading_calendar, get_st_stocks,
+    get_notrade_stocks, next_workday, last_workday, _ensure_calendar,
 )
 from core.report import generate_report
 from core.db_writer import save_combine_score
@@ -126,6 +127,33 @@ def _calc_lookback_start(target_date, n_trading_days):
     if len(all_dates) >= n_trading_days:
         return all_dates[-n_trading_days]
     return all_dates[0] if all_dates else rough_start
+
+
+def target_date_decision():
+    """
+    自动确定目标日期（target_date）
+
+    根据当前时间和交易日情况，确定应该处理的目标日期：
+    - 如果是交易日且当前时间 >= 16:00，返回下一个交易日
+    - 如果是交易日且当前时间 < 16:00，返回当天
+    - 如果不是交易日，返回下一个交易日
+    """
+    cal = _ensure_calendar()
+    today = datetime.now().strftime("%Y-%m-%d")
+    time_now = datetime.now().strftime("%H:%M")
+    is_trading_day = today in cal
+
+    if is_trading_day:
+        if time_now >= "16:00":
+            target = next_workday(today)
+        else:
+            target = today
+    else:
+        target = next_workday(today)
+
+    print(f"  自动日期决策: 今天={today}, 时间={time_now}, "
+          f"交易日={'是' if is_trading_day else '否'} → target_date={target}")
+    return target
 
 
 # ============================================================
@@ -318,7 +346,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
             ic_window=ic_window,
             date_mode=date_mode,
             df_calendar=shared["df_calendar"],
-            top_n_extra=stock_number if backtest else 0,
+            top_n_extra=stock_number if (backtest or is_sql) else 0,
             smooth_window=smooth_window,
             df_st=shared["df_st"],
             df_notrade=shared["df_notrade"],
@@ -337,23 +365,71 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 
         results[index_name] = df_combined
 
+        # 构建固定维度输出: 全部从全市场打分取 (统一z-score基准)
+        # 成分股 + 非成分股top(stock_number - 成分股数) → 截面标准化
+        df_fixed = None
+        if df_fm_scores is not None and not df_fm_scores.empty:
+            # 预计算每日成分股code集合
+            comp_codes_by_date = (
+                df_combined.groupby("valuation_date")["code"]
+                .apply(set).to_dict()
+            )
+
+            dates = sorted(df_combined["valuation_date"].unique())
+            parts = []
+            for d in dates:
+                df_fm_day = df_fm_scores[df_fm_scores["valuation_date"] == d]
+                if df_fm_day.empty:
+                    continue
+                comp_codes = comp_codes_by_date.get(d, set())
+                # 从全市场打分中提取: 成分股 + 非成分股top
+                df_comp = df_fm_day[df_fm_day["code"].isin(comp_codes)]
+                df_non_comp = df_fm_day[~df_fm_day["code"].isin(comp_codes)]
+                n_extra = max(0, stock_number - len(df_comp))
+                if n_extra > 0 and not df_non_comp.empty:
+                    df_top_extra = df_non_comp.nlargest(n_extra, "final_score")
+                    df_day = pd.concat([df_comp, df_top_extra], ignore_index=True)
+                else:
+                    df_day = df_comp.copy()
+                # 截面标准化: 对这 stock_number 只做 z-score
+                mean = df_day["final_score"].mean()
+                std = df_day["final_score"].std()
+                if std > 0:
+                    df_day["final_score"] = (df_day["final_score"] - mean) / std
+                parts.append(df_day)
+
+            if parts:
+                df_fixed = pd.concat(parts, ignore_index=True)
+                df_fixed["score_name"] = output_name
+                n_fixed_median = int(
+                    df_fixed.groupby("valuation_date")["code"].count().median()
+                )
+                print(f"  固定维度输出: 每日约{n_fixed_median}只 (全市场基准+截面标准化)")
+
         # 回测 + 报告
         if backtest:
-            # 构建 top 组合
+            # top组合: 从固定维度输出(df_fixed)中取打分最高的 (stock_number - 成分股数) 只等权
             df_top = None
-            if df_fm_scores is not None and not df_fm_scores.empty:
-                print(f"\n  构建 top 组合: 全市场打分最高 top{stock_number}")
+            if df_fixed is not None and not df_fixed.empty:
+                # 预计算每日成分股数, 避免重复扫描
+                comp_count_per_day = (
+                    df_combined.groupby("valuation_date")["code"].count()
+                    .to_dict()
+                )
                 df_top = (
-                    df_fm_scores
+                    df_fixed
                     .groupby("valuation_date", group_keys=False)
-                    .apply(lambda g: g.nlargest(stock_number, "final_score"))
+                    .apply(lambda g: g.nlargest(
+                        max(0, stock_number - comp_count_per_day.get(g.name, 0)),
+                        "final_score"
+                    ))
                     .reset_index(drop=True)
                 )
                 n_top_dates = df_top["valuation_date"].nunique()
                 n_top_median = int(
                     df_top.groupby("valuation_date")["code"].count().median()
                 )
-                print(f"  top组合: {n_top_dates}天, 每日{n_top_median}只")
+                print(f"  top组合: {n_top_dates}天, 每日{n_top_median}只 (stock_number-成分股数 等权)")
 
             # 生成报告
             print(f"\n{'='*50}")
@@ -379,12 +455,16 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
             )
             timings[f"{index_name}.回测+报告"] = time.time() - t0
 
-        # 入库 (需 prod 模式 + is_sql=True)
+        # 入库: 用固定维度数据
         if is_sql:
             t0 = time.time()
             table_label = "combine_score" if mode == "prod" else "combine_score_test"
-            print(f"\n  入库: {output_name} → {table_label} 表")
-            save_combine_score(df_combined, mode=mode)
+            df_to_save = df_fixed if df_fixed is not None else df_combined
+            df_to_save = df_to_save.copy()
+            df_to_save["score_name"] = output_name
+            n_save = len(df_to_save)
+            print(f"\n  入库: {output_name} → {table_label} 表 ({n_save}行)")
+            save_combine_score(df_to_save, mode=mode)
             timings[f"{index_name}.入库"] = time.time() - t0
 
     # 耗时汇总
@@ -406,7 +486,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 # 功能3: 单日因子合成更新
 # ============================================================
 
-def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
+def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=False):
     """
     单日因子合成更新
 
@@ -415,7 +495,7 @@ def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
 
     Parameters
     ----------
-    target_date : 目标持仓日 (T日), 格式 "YYYY-MM-DD"
+    target_date : 目标持仓日 (T日), 格式 "YYYY-MM-DD", None则自动决策
     index_list  : 指数列表, None则从配置读取全部
     mode        : "test" 或 "prod"，决定读取哪个配置文件 (默认prod)
     is_sql      : True时入库combine_score表 (需配合mode="prod")
@@ -425,6 +505,8 @@ def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
     dict : {index_name: DataFrame[valuation_date, code, score_name, final_score]}
            只包含 target_date 当天的数据
     """
+    if target_date is None:
+        target_date = target_date_decision()
     combine_cfg = load_combine_by_index_config(mode=mode)
     bt = combine_cfg["backtest"]
     stock_number = bt["stock_number"]
@@ -460,10 +542,130 @@ def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
     print(f"  待处理指数: {run_indices}")
     print(f"{'='*60}\n")
 
-    # 加载共享数据 (只加载回溯范围)
+    # ============================================================
+    # 第一步: 加载所有数据
+    # ============================================================
     shared = _load_shared_data(lookback_start, target_date, run_indices)
 
-    # 逐指数合成
+    # 收集所有指数需要的因子名
+    all_factor_names = set()
+    for index_name in run_indices:
+        index_cfg = combine_cfg["indices"][index_name]
+        if "clusters" in index_cfg:
+            for cluster_cfg in index_cfg["clusters"].values():
+                for f in cluster_cfg["factors"]:
+                    all_factor_names.add(f["name"])
+        else:
+            for f in index_cfg["factors"]:
+                all_factor_names.add(f["name"])
+    all_factor_names = sorted(all_factor_names)
+
+    # 预加载因子数据
+    print(f"\n预加载因子数据: {len(all_factor_names)} 个因子...")
+    t0 = time.time()
+    if date_mode == "available_date":
+        query_start = last_workday(lookback_start)
+        df_all_factors = get_factor_data_batch(query_start, target_date, all_factor_names)
+    else:
+        df_all_factors = get_factor_data_batch(lookback_start, target_date, all_factor_names)
+    print(f"  因子数据加载完成: {len(df_all_factors)} 条, "
+          f"耗时 {_fmt_elapsed(time.time() - t0)}")
+
+    # ============================================================
+    # 第二步: 数据完整性检查
+    # ============================================================
+    print(f"\n{'='*60}")
+    print(f"  数据完整性检查")
+    print(f"{'='*60}")
+    errors = []
+
+    # 2a. 检查因子数据的 available_date 是否覆盖 target_date
+    factor_dates = sorted(df_all_factors["valuation_date"].astype(str).unique())
+    if not factor_dates:
+        errors.append("因子数据为空，没有任何日期的数据")
+    else:
+        # available_date 模式下, target_date 的前一个交易日应该有数据
+        expected_date = last_workday(target_date)
+        if expected_date not in factor_dates:
+            errors.append(
+                f"因子数据缺少 target_date 对应的 available_date: "
+                f"期望 {expected_date}, 实际最新日期 {factor_dates[-1]}"
+            )
+        else:
+            print(f"  [OK] 因子 available_date 覆盖正常 (最新: {factor_dates[-1]})")
+
+    # 2b. 检查每个因子在 target_date 对应的 available_date 是否有数据
+    if factor_dates:
+        expected_date = last_workday(target_date)
+        df_latest = df_all_factors[
+            df_all_factors["valuation_date"].astype(str) == expected_date
+        ]
+        factors_with_data = set(df_latest["score_name"].unique())
+        missing_factors = set(all_factor_names) - factors_with_data
+        if missing_factors:
+            errors.append(
+                f"以下因子在 {expected_date} 缺少数据: {sorted(missing_factors)}"
+            )
+        else:
+            print(f"  [OK] 全部 {len(all_factor_names)} 个因子在 {expected_date} 有数据")
+
+    # 2c. 检查 IC 回溯数据是否充足
+    n_factor_dates = len(factor_dates)
+    min_required = ic_window + smooth_window
+    if n_factor_dates < min_required:
+        errors.append(
+            f"因子数据交易日数不足: 需要至少 {min_required} 天 "
+            f"(IC窗口{ic_window} + MA窗口{smooth_window}), "
+            f"实际只有 {n_factor_dates} 天"
+        )
+    else:
+        print(f"  [OK] IC回溯数据充足: {n_factor_dates} 天 "
+              f"(需要 >= {min_required} 天)")
+
+    # 2d. 检查行情数据是否覆盖
+    stock_dates = sorted(
+        shared["df_stock"]["valuation_date"].astype(str).unique()
+    )
+    if not stock_dates:
+        errors.append("行情数据为空")
+    else:
+        if stock_dates[-1] < last_workday(target_date):
+            errors.append(
+                f"行情数据最新日期 {stock_dates[-1]} "
+                f"早于 target 对应的 available_date {last_workday(target_date)}"
+            )
+        else:
+            print(f"  [OK] 行情数据覆盖正常 (最新: {stock_dates[-1]})")
+
+    # 2e. 检查指数成分股是否覆盖
+    for index_name in run_indices:
+        comp_dates = sorted(
+            shared["index_comps"][index_name]["valuation_date"].astype(str).unique()
+        )
+        if not comp_dates:
+            errors.append(f"{index_name} 成分股数据为空")
+        elif comp_dates[-1] < last_workday(target_date):
+            errors.append(
+                f"{index_name} 成分股最新日期 {comp_dates[-1]} "
+                f"早于 {last_workday(target_date)}"
+            )
+        else:
+            print(f"  [OK] {index_name} 成分股覆盖正常 (最新: {comp_dates[-1]})")
+
+    # 检查结果
+    if errors:
+        print(f"\n{'!'*60}")
+        print(f"  数据完整性检查失败！发现 {len(errors)} 个问题:")
+        for i, err in enumerate(errors, 1):
+            print(f"  {i}. {err}")
+        print(f"{'!'*60}")
+        raise RuntimeError(f"数据完整性检查失败: {len(errors)} 个问题, 详见上方日志")
+
+    print(f"\n  数据检查全部通过，开始合成...\n")
+
+    # ============================================================
+    # 第三步: 逐指数合成 (使用预加载数据)
+    # ============================================================
     results = {}
 
     for index_name in run_indices:
@@ -487,6 +689,7 @@ def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
             smooth_window=smooth_window,
             df_st=shared["df_st"],
             df_notrade=shared["df_notrade"],
+            df_all_factors=df_all_factors,
         )
         elapsed = time.time() - t0
 
@@ -503,29 +706,31 @@ def run_combine_update(target_date, index_list=None, mode="prod", is_sql=False):
         # 只保留最新日期
         latest_date = df_combined["valuation_date"].max()
 
-        # 成分股评分
-        df_comp = df_combined[
-            df_combined["valuation_date"] == latest_date
-        ].copy()
-        n_comp = len(df_comp)
+        # 从全市场打分取固定维度: 成分股 + 非成分股top + 截面标准化
+        comp_codes = set(
+            df_combined[df_combined["valuation_date"] == latest_date]["code"]
+        )
+        n_comp = len(comp_codes)
 
-        # 非成分股补齐到 stock_number
-        df_output = df_comp.copy()
+        df_output = pd.DataFrame()
         if df_fm_scores is not None and not df_fm_scores.empty:
             df_fm_latest = df_fm_scores[
                 df_fm_scores["valuation_date"] == latest_date
             ]
             if not df_fm_latest.empty:
-                # 剔除已在成分股中的股票
-                comp_codes = set(df_comp["code"])
-                df_non_comp = df_fm_latest[
-                    ~df_fm_latest["code"].isin(comp_codes)
-                ]
-                # 取打分最高的补到 stock_number
-                n_extra = max(0, stock_number - n_comp)
+                df_comp = df_fm_latest[df_fm_latest["code"].isin(comp_codes)]
+                df_non_comp = df_fm_latest[~df_fm_latest["code"].isin(comp_codes)]
+                n_extra = max(0, stock_number - len(df_comp))
                 if n_extra > 0 and not df_non_comp.empty:
                     df_top_extra = df_non_comp.nlargest(n_extra, "final_score")
                     df_output = pd.concat([df_comp, df_top_extra], ignore_index=True)
+                else:
+                    df_output = df_comp.copy()
+                # 截面标准化
+                mean = df_output["final_score"].mean()
+                std = df_output["final_score"].std()
+                if std > 0:
+                    df_output["final_score"] = (df_output["final_score"] - mean) / std
 
         df_output["score_name"] = output_name
         df_output = df_output[["valuation_date", "code", "score_name", "final_score"]].reset_index(drop=True)
@@ -607,7 +812,8 @@ if __name__ == "__main__":
 
     # --- update: 单日更新 ---
     p_update = subparsers.add_parser("update", help="单日因子合成更新")
-    p_update.add_argument("target_date", help="目标日期 YYYY-MM-DD")
+    p_update.add_argument("target_date", nargs="?", default=None,
+                          help="目标日期 YYYY-MM-DD (不指定则自动决策)")
     p_update.add_argument("--index", nargs="+", default=None,
                           help="指数列表 (默认从combine配置读取)")
     p_update.add_argument("--mode", default="prod", choices=["test", "prod"],

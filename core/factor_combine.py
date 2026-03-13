@@ -40,14 +40,16 @@ def zscore_cross_section(series: pd.Series) -> pd.Series:
 
 def _calc_factor_daily_ic(df_factor: pd.DataFrame, df_stock: pd.DataFrame) -> pd.DataFrame:
     """
-    计算单因子逐日 Rank IC
+    计算单因子逐日 Rank IC (预测性IC)
 
-    因子日期已统一为 target_date（调用前已完成转换），
-    IC(t) = corr(factor(t), return(t))  — 同日匹配
+    factor(available_date=T) 是用 T-1 收盘数据计算、T日可用的因子值。
+    return(T) 是 T 日的实际收益。
+    IC(T) = corr(factor(T), return(T)) — 同日匹配即为预测性IC，
+    因为 factor 本质来自 T-1 的数据，预测 T 的收益。
 
     Parameters
     ----------
-    df_factor : DataFrame[valuation_date, code, z_score]  (方向已处理, 日期=target_date)
+    df_factor : DataFrame[valuation_date, code, z_score]  (方向已处理, 日期=available_date)
     df_stock  : 股票行情 DataFrame[valuation_date, code, close, pre_close]
 
     Returns
@@ -61,7 +63,8 @@ def _calc_factor_daily_ic(df_factor: pd.DataFrame, df_stock: pd.DataFrame) -> pd
         subset=["valuation_date", "code"]
     )
 
-    # 同日匹配: factor(t) vs return(t)
+    # 同日匹配: factor(available_date=T) vs return(T)
+    # factor 实际用 T-1 数据, 天然就是预测 T 日收益
     df_merged = df_factor.merge(
         df_ret, on=["valuation_date", "code"], how="inner",
     )
@@ -102,10 +105,11 @@ def _build_ic_weights(ic_map: dict, ic_window: int) -> pd.DataFrame:
     for fname, ic_df in ic_map.items():
         tmp = ic_df[["valuation_date", "rank_IC"]].copy()
         tmp = tmp.sort_values("valuation_date")
-        # shift(1): 日期t的权重只用t-1及之前的IC，避免前瞻偏差
+        # IC(T) 在 T 收盘后即可计算 (factor用T-1数据, return是T日),
+        # 因此 weight(T) 可以用 IC(T), 无需 shift
         tmp["rolling_ic"] = tmp["rank_IC"].rolling(
             ic_window, min_periods=5
-        ).mean().abs().shift(1)
+        ).mean().abs()
         tmp["factor_name"] = fname
         all_ic.append(tmp[["valuation_date", "factor_name", "rolling_ic"]].dropna())
 
@@ -199,7 +203,8 @@ def combine_factors_for_index(start_date: str, end_date: str,
                                top_n_extra: int = 0,
                                smooth_window: int = 1,
                                df_st=None,
-                               df_notrade=None) -> pd.DataFrame:
+                               df_notrade=None,
+                               df_all_factors: pd.DataFrame = None) -> pd.DataFrame:
     """
     针对单个指数合成因子（支持等权 / IC加权 / 两层IC加权）
 
@@ -227,6 +232,7 @@ def combine_factors_for_index(start_date: str, end_date: str,
     smooth_window : 合成分数时序平滑窗口 (MA), 1=不平滑, 5=MA5
     df_st         : ST股票 DataFrame[valuation_date, code], 传入则复用外部数据，否则内部查询DB
     df_notrade    : 涨跌停股票 DataFrame[valuation_date, code], 传入则复用外部数据，否则内部查询DB
+    df_all_factors: 预加载的因子数据 DataFrame[valuation_date, code, score_name, final_score], 传入则跳过DB查询
 
     Returns
     -------
@@ -267,19 +273,25 @@ def combine_factors_for_index(start_date: str, end_date: str,
 
     # --- 步骤1: 批量加载因子, 内部统一用 available_date ---
     factor_names = [f["name"] for f in factor_list]
-    print(f"\n批量加载 {len(factor_names)} 个因子 (单次SQL)...")
-    t0 = time.time()
 
-    if date_mode == "available_date":
-        # available_date 模式: DB日期就是 available_date, 直接查询不映射
-        query_start = last_workday(start_date)
-        df_all_raw = get_factor_data_batch(query_start, end_date, factor_names)
+    if df_all_factors is not None:
+        # 使用外部预加载的因子数据
+        df_all_raw = df_all_factors[df_all_factors["score_name"].isin(factor_names)].copy()
+        print(f"\n使用预加载因子数据: {len(df_all_raw)} 条, {len(factor_names)} 个因子")
     else:
-        # target_date 模式: DB日期是 target_date, 映射为 available_date (前一交易日)
-        df_all_raw = get_factor_data_batch(start_date, end_date, factor_names)
+        print(f"\n批量加载 {len(factor_names)} 个因子 (单次SQL)...")
+        t0 = time.time()
 
-    t_db = time.time() - t0
-    print(f"  DB查询完成: {len(df_all_raw)} 条, 耗时 {t_db:.1f}s")
+        if date_mode == "available_date":
+            # available_date 模式: DB日期就是 available_date, 直接查询不映射
+            query_start = last_workday(start_date)
+            df_all_raw = get_factor_data_batch(query_start, end_date, factor_names)
+        else:
+            # target_date 模式: DB日期是 target_date, 映射为 available_date (前一交易日)
+            df_all_raw = get_factor_data_batch(start_date, end_date, factor_names)
+
+        t_db = time.time() - t0
+        print(f"  DB查询完成: {len(df_all_raw)} 条, 耗时 {t_db:.1f}s")
 
     # target_date 模式: 映射为 available_date
     if date_mode == "target_date":

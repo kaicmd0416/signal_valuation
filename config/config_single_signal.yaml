@@ -8,7 +8,7 @@ backtest:
   start_date: "2023-07-01"
   end_date: "2026-03-10"
   n_groups: 5
-  top_n: 100
+  top_n: 200
   index_list: ["hs300", "zz500", "zz1000", "zz2000", "zzA500"]
 
 signals:

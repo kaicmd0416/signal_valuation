@@ -543,7 +543,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
     date_mode    : "target_date" | "available_date"
     df_top       : 全市场top N组合持仓 [valuation_date, code, final_score]（可选，合成因子用）
     top_n_extra  : Top组合选股数量-合成因子用（如200），用于标题显示
-    top_n        : Top组合选股数量-单因子用（如50），从成分内选因子值最高的N只
+    top_n        : Top组合选股数量-单因子用（如200），从全市场选N只
     mode         : "test" 或 "prod"，输出到对应子目录; None则直接输出到base_dir
     """
     if output_base is None:
@@ -727,7 +727,8 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
         # ========== 9. Top组合回测（可选） ==========
         # 两种模式:
         #   A) df_top + top_n_extra: 合成因子全市场选股 (combine flow)
-        #   B) top_n + df_factor: 单因子全市场选打分最高的N只
+        #   B) top_n + df_factor: 单因子全市场选top N只
+        #      方向由当前指数的 mean Rank IC 符号决定: IC>0选最高, IC<0选最低
         top_result = None
         _top_df = None
         _top_n_display = 0
@@ -739,7 +740,15 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             _top_n_display = top_n_extra
             _top_label = f"全市场top{top_n_extra}等权"
         elif top_n > 0 and df_factor is not None and not df_factor.empty:
-            # 模式B: 单因子全市场选打分最高的N只
+            # 模式B: 单因子全市场选top N只
+            # 根据当前指数的IC符号决定方向
+            ic_direction = 1
+            if df_ic is not None and not df_ic.empty:
+                mean_ic = df_ic["rank_IC"].mean()
+                ic_direction = 1 if mean_ic >= 0 else -1
+                print(f"  Top组合方向: mean_IC={mean_ic:.4f} → "
+                      f"{'正向(选最高)' if ic_direction == 1 else '反向(选最低)'}")
+
             df_f = df_factor[["valuation_date", "code", "final_score"]].copy()
             # 如果是 available_date 模式，需要映射到持仓日
             if date_mode == "available_date" and df_calendar is not None and not df_calendar.empty:
@@ -750,14 +759,24 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
                 df_f.dropna(subset=["valuation_date"], inplace=True)
             else:
                 df_f["valuation_date"] = df_f["valuation_date"].astype(str)
-            _top_df = (
-                df_f
-                .groupby("valuation_date", group_keys=False)
-                .apply(lambda g: g.nlargest(top_n, "final_score"))
-                .reset_index(drop=True)
-            )
+            if ic_direction == -1:
+                _top_df = (
+                    df_f
+                    .groupby("valuation_date", group_keys=False)
+                    .apply(lambda g: g.nsmallest(top_n, "final_score"))
+                    .reset_index(drop=True)
+                )
+                _dir_label = "最低"
+            else:
+                _top_df = (
+                    df_f
+                    .groupby("valuation_date", group_keys=False)
+                    .apply(lambda g: g.nlargest(top_n, "final_score"))
+                    .reset_index(drop=True)
+                )
+                _dir_label = "最高"
             _top_n_display = top_n
-            _top_label = f"全市场top{top_n}等权"
+            _top_label = f"全市场打分{_dir_label}top{top_n}等权"
 
         if _top_df is not None and not _top_df.empty and _top_n_display > 0:
             pdf.h1(f"<b>{index_cn} - Top组合 ({_top_label})</b>")

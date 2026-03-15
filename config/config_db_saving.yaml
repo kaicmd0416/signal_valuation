@@ -3,8 +3,8 @@
 # ============================================================
 
 CombineScoreProd:
-  table_name: "combine_score"
-  db_url: "mysql+pymysql://prod:Abcd1234#@rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com:3306/data_prepared_new?autocommit=True"
+  table_name: "data_score"
+  db_url: "mysql+pymysql://prod:Abcd1234#@rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com:3306/data_prepared_new"
   chunk_size: 20000
   workers: 4
   private_keys:
@@ -20,7 +20,7 @@ CombineScoreProd:
 
 CombineScoreTest:
   table_name: "combine_score_test"
-  db_url: "mysql+pymysql://prod:Abcd1234#@rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com:3306/data_prepared_new?autocommit=True"
+  db_url: "mysql+pymysql://prod:Abcd1234#@rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com:3306/data_prepared_new"
   chunk_size: 20000
   workers: 4
   private_keys:

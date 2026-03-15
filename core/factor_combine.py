@@ -284,7 +284,7 @@ def combine_factors_for_index(start_date: str, end_date: str,
 
         if date_mode == "available_date":
             # available_date 模式: DB日期就是 available_date, 直接查询不映射
-            query_start = last_workday(start_date)
+            query_start = last_workday(start_date) or start_date
             df_all_raw = get_factor_data_batch(query_start, end_date, factor_names)
         else:
             # target_date 模式: DB日期是 target_date, 映射为 available_date (前一交易日)
@@ -655,13 +655,14 @@ def combine_factors_for_index(start_date: str, end_date: str,
 
 if __name__ == "__main__":
     import sys
-    from core.data_prepare import load_config
+    from core.data_prepare import load_combine_by_index_config
 
     if len(sys.argv) >= 3:
         start_date = sys.argv[1]
         end_date = sys.argv[2]
     else:
-        bt = load_config()["backtest"]
+        combine_cfg = load_combine_by_index_config(mode="test")
+        bt = combine_cfg["backtest"]
         start_date = bt["start_date"]
         end_date = bt["end_date"]
 

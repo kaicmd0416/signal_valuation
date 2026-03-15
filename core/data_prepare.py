@@ -16,6 +16,7 @@ import yaml
 import pandas as pd
 import sqlalchemy
 from pathlib import Path
+from functools import lru_cache
 
 _CONFIG_DIR = Path(__file__).parent.parent / "config"
 
@@ -51,20 +52,35 @@ def load_combine_by_index_config(mode: str = "test") -> dict:
         return yaml.safe_load(f)
 
 
+_ENGINE_CACHE = {}
+
+
 def get_engine(db_key: str = "factor"):
     """
-    创建数据库连接引擎
+    创建数据库连接引擎（带缓存，每个db_key只创建一次）
 
     Parameters
     ----------
     db_key : "factor"(因子库) 或 "market"(行情库)
     """
-    cfg = load_config()["database"][db_key]
-    url = (
-        f"mysql+pymysql://{cfg['user']}:{cfg['password']}"
-        f"@{cfg['host']}:{cfg['port']}/{cfg['database']}"
-    )
-    return sqlalchemy.create_engine(url)
+    if db_key not in _ENGINE_CACHE:
+        cfg = load_config()["database"][db_key]
+        url = (
+            f"mysql+pymysql://{cfg['user']}:{cfg['password']}"
+            f"@{cfg['host']}:{cfg['port']}/{cfg['database']}"
+        )
+        _ENGINE_CACHE[db_key] = sqlalchemy.create_engine(url, pool_recycle=3600)
+    return _ENGINE_CACHE[db_key]
+
+
+import re as _re
+
+def _get_factor_table_name() -> str:
+    """获取因子表名（从配置读取，默认data_score）"""
+    name = load_config()["database"]["factor"].get("sheet_name", "data_score")
+    if not _re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        raise ValueError(f"非法表名: {name}")
+    return name
 
 
 # ============================================================
@@ -86,11 +102,12 @@ def get_factor_data(start_date: str, end_date: str, signal_name: str) -> pd.Data
     DataFrame[valuation_date, code, score_name, final_score]
     """
     engine = get_engine("factor")
+    table_name = _get_factor_table_name()
     # 利用 idx_scorename_date (score_name, valuation_date) 索引
     # 去掉 ORDER BY 让 DB 只做索引扫描，排序交给 pandas
-    query = sqlalchemy.text("""
+    query = sqlalchemy.text(f"""
         SELECT valuation_date, code, score_name, final_score
-        FROM data_score
+        FROM {table_name}
         WHERE score_name = :signal_name
           AND valuation_date BETWEEN :start_date AND :end_date
     """)
@@ -123,13 +140,14 @@ def get_factor_data_batch(start_date: str, end_date: str,
         return pd.DataFrame(columns=["valuation_date", "code", "score_name", "final_score"])
 
     engine = get_engine("factor")
+    table_name = _get_factor_table_name()
     # IN(...) 大批量时 MySQL 优化器自动选择 PRIMARY 聚簇索引顺序扫描
     # 比 UNION ALL 或 FORCE INDEX(idx_scorename_date) 回表更快
     # 去掉 ORDER BY 避免 DB 端 filesort，排序交给 pandas
     placeholders = ", ".join([f":name_{i}" for i in range(len(signal_names))])
     query = sqlalchemy.text(f"""
         SELECT valuation_date, code, score_name, final_score
-        FROM data_score
+        FROM {table_name}
         WHERE score_name IN ({placeholders})
           AND valuation_date BETWEEN :start_date AND :end_date
     """)
@@ -303,22 +321,14 @@ def next_workday(date_str: str) -> str:
 
     Returns
     -------
-    str : 下一个交易日, 如 "2026-01-02"
+    str : 下一个交易日；若找不到则返回 None
     """
+    import bisect
     cal = _ensure_calendar()
-    # 如果 date_str 是交易日，取其后一天
-    # 如果不是交易日，取第一个 >= date_str 的交易日
-    try:
-        idx = cal.index(date_str)
-        if idx + 1 < len(cal):
-            return cal[idx + 1]
-        return date_str
-    except ValueError:
-        # date_str 不在日历中，取第一个 > date_str 的交易日
-        for d in cal:
-            if d > date_str:
-                return d
-        return date_str
+    idx = bisect.bisect_right(cal, date_str)
+    if idx < len(cal):
+        return cal[idx]
+    return None
 
 
 def last_workday(date_str: str) -> str:
@@ -331,14 +341,11 @@ def last_workday(date_str: str) -> str:
 
     Returns
     -------
-    str : 上一个交易日, 如 "2024-12-31"
+    str : 上一个交易日；若找不到则返回 None
     """
+    import bisect
     cal = _ensure_calendar()
-    # 取最后一个 < date_str 的交易日
-    result = None
-    for d in cal:
-        if d < date_str:
-            result = d
-        else:
-            break
-    return result if result else date_str
+    idx = bisect.bisect_left(cal, date_str)
+    if idx > 0:
+        return cal[idx - 1]
+    return None

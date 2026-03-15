@@ -4,15 +4,16 @@
 
 database:
   factor:
-    host: rm-cn-fhh4gzo9900083vo.rwlb.rds.aliyuncs.com
+    host: rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com
     port: 3306
-    user: kai
+    user: prod
     password: "Abcd1234#"
-    database: data_prepared_hg
+    database: data_prepared
+    sheet_name: data_score_hg
   market:
     host: rm-bp1o6we7s3o1h76x1to.mysql.rds.aliyuncs.com
     port: 3306
-    user: kai
+    user: prod
     password: "Abcd1234#"
     database: data_prepared_new
 

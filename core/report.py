@@ -60,7 +60,8 @@ def calc_yearly_excess(df_info: pd.DataFrame) -> pd.DataFrame:
 def calc_excess_nav(df_info: pd.DataFrame) -> pd.DataFrame:
     """计算各组超额净值曲线"""
     df = df_info[["valuation_date", "excess_paper_return", "portfolio_name"]].copy()
-    df_pivot = df.pivot_table(
+    df = df.drop_duplicates(subset=["valuation_date", "portfolio_name"])
+    df_pivot = df.pivot(
         index="valuation_date", columns="portfolio_name",
         values="excess_paper_return",
     )
@@ -272,7 +273,8 @@ def calc_yearly_excess_net(df_info: pd.DataFrame) -> pd.DataFrame:
 def calc_excess_nav_net(df_info: pd.DataFrame) -> pd.DataFrame:
     """计算各组扣费后超额净值曲线"""
     df = df_info[["valuation_date", "excess_net_return", "portfolio_name"]].copy()
-    df_pivot = df.pivot_table(
+    df = df.drop_duplicates(subset=["valuation_date", "portfolio_name"])
+    df_pivot = df.pivot(
         index="valuation_date", columns="portfolio_name",
         values="excess_net_return",
     )
@@ -438,8 +440,8 @@ def _calc_top_portfolio(df_top, df_stock, df_index_ret, index_name,
     total_excess = df_daily["cum_excess"].iloc[-1] - 1
     total_excess_net = df_daily["cum_excess_net"].iloc[-1] - 1
     n_days = len(df_daily)
-    ann_excess = total_excess * 252 / n_days
-    ann_excess_net = total_excess_net * 252 / n_days
+    ann_excess = (1 + total_excess) ** (252 / n_days) - 1
+    ann_excess_net = (1 + total_excess_net) ** (252 / n_days) - 1
     ann_vol = df_daily["excess_return"].std() * np.sqrt(252)
     sharpe = ann_excess / ann_vol if ann_vol > 0 else 0
     ann_turnover = df_daily["turnover"].mean() * 252
@@ -708,7 +710,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             pdf.text("多空数据不足，跳过")
         else:
             ls_ret = df_ls["ls_nav"].iloc[-1] - 1
-            ls_annual = ls_ret * 252 / len(df_ls)
+            ls_annual = (1 + ls_ret) ** (252 / len(df_ls)) - 1
             ls_vol = df_ls["long_short"].std() * np.sqrt(252)
             ls_sharpe = ls_annual / ls_vol if ls_vol > 0 else 0
             ls_data = [
@@ -901,7 +903,7 @@ def generate_report(signal_name: str, start_date: str, end_date: str,
             df_ls = calc_long_short(df_info, n_groups)
             if not df_ls.empty:
                 ls_ret = df_ls["ls_nav"].iloc[-1] - 1
-                ls_annual = ls_ret * 252 / len(df_ls)
+                ls_annual = (1 + ls_ret) ** (252 / len(df_ls)) - 1
                 ls_vol = df_ls["long_short"].std() * np.sqrt(252)
                 ls_sharpe = ls_annual / ls_vol if ls_vol > 0 else 0
                 df_ls_summary = pd.DataFrame({

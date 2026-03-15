@@ -71,7 +71,9 @@ def _load_shared_data(start_date, end_date, index_list=None,
         "df_st", "df_notrade", "index_comps"
     }
     """
-    mkt_end = next_workday(end_date)
+    # 行情数据需要覆盖到 end_date 的下一个交易日，
+    # 因为 available_date 模式下持仓日 = next_workday(因子日期)，需要该日行情计算收益
+    mkt_end = next_workday(end_date) or end_date
     result = {}
 
     # 行情数据
@@ -116,6 +118,7 @@ def _calc_lookback_start(target_date, n_trading_days):
 
     先用自然日粗略估算范围，查日历后精确定位。
     """
+    # 交易日约占自然日的 60%，所以用 1.6 倍自然日粗略估算回溯范围
     rough_start = (
         datetime.strptime(target_date, "%Y-%m-%d")
         - timedelta(days=int(n_trading_days * 1.6))
@@ -150,6 +153,9 @@ def target_date_decision():
             target = today
     else:
         target = next_workday(today)
+
+    if target is None:
+        raise RuntimeError(f"交易日历中找不到 {today} 之后的交易日，请更新日历数据")
 
     print(f"  自动日期决策: 今天={today}, 时间={time_now}, "
           f"交易日={'是' if is_trading_day else '否'} → target_date={target}")
@@ -281,7 +287,7 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
     weight_method = combine_cfg.get("weight_method", "equal")
     ic_window = combine_cfg.get("ic_window", 60)
     smooth_window = combine_cfg.get("smooth_window", 5)
-    date_mode = combine_cfg.get("date_mode", "target_date")
+    date_mode = combine_cfg.get("date_mode", "available_date")
 
     # 确定要跑的指数
     all_indices = list(combine_cfg["indices"].keys())
@@ -365,8 +371,11 @@ def run_combine_history(index_list=None, start_date=None, end_date=None,
 
         results[index_name] = df_combined
 
-        # 构建固定维度输出: 全部从全市场打分取 (统一z-score基准)
-        # 成分股 + 非成分股top(stock_number - 成分股数) → 截面标准化
+        # 构建固定维度输出:
+        # 目的: 入库数据需要每日固定约 stock_number 只股票，包含:
+        #   - 全部成分股 (使用全市场z-score打分，非成分股内打分)
+        #   - 非成分股中打分最高的 top N 只 (N = stock_number - 成分股数)
+        # 最后对这 stock_number 只做截面标准化，使不同日期的分数可比
         df_fixed = None
         if df_fm_scores is not None and not df_fm_scores.empty:
             # 预计算每日成分股code集合
@@ -524,7 +533,7 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Tr
             print(f"错误: 没有有效的指数，可选: {all_indices}")
             return {}
 
-    # 计算回溯起始日 (IC窗口 + MA窗口 + 缓冲)
+    # 计算回溯起始日: IC窗口 + MA窗口 + 10天缓冲（防止节假日导致数据不足）
     total_lookback = ic_window + smooth_window + 10
     print(f"计算回溯范围: IC窗口={ic_window}, MA窗口={smooth_window},"
           f" 总回溯≈{total_lookback}个交易日")
@@ -560,10 +569,12 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Tr
     all_factor_names = sorted(all_factor_names)
 
     # 预加载因子数据
+    # available_date 模式下往前多查一天: 因子合成内部会用 last_workday(start_date) 作为
+    # 起始查询点，这里提前覆盖以避免合成时再次查库
     print(f"\n预加载因子数据: {len(all_factor_names)} 个因子...")
     t0 = time.time()
     if date_mode == "available_date":
-        query_start = last_workday(lookback_start)
+        query_start = last_workday(lookback_start) or lookback_start
         df_all_factors = get_factor_data_batch(query_start, target_date, all_factor_names)
     else:
         df_all_factors = get_factor_data_batch(lookback_start, target_date, all_factor_names)
@@ -577,6 +588,11 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Tr
     print(f"  数据完整性检查")
     print(f"{'='*60}")
     errors = []
+
+    # 数据完整性检查: 确保 update 模式运行前所有数据源都已更新到位
+    # 两种模式下都以 last_workday(target_date) 作为期望日期:
+    #   available_date 模式: target_date 的因子对应 available_date = last_workday(target_date)
+    #   target_date 模式: 同理，因子数据以 last_workday 为最新可用日期
 
     # 2a. 检查因子数据的日期是否覆盖 target_date
     factor_dates = sorted(df_all_factors["valuation_date"].astype(str).unique())
@@ -704,10 +720,11 @@ def run_combine_update(target_date=None, index_list=None, mode="prod", is_sql=Tr
             print(f"  {output_name} 合成为空，跳过")
             continue
 
-        # 只保留最新日期
+        # 只保留最新日期 (update 模式只入库目标日的数据)
         latest_date = df_combined["valuation_date"].max()
 
-        # 从全市场打分取固定维度: 成分股 + 非成分股top + 截面标准化
+        # 从全市场打分取固定维度: 成分股全部 + 非成分股top补齐到 stock_number
+        # 然后截面标准化，使入库分数在股票间可比
         comp_codes = set(
             df_combined[df_combined["valuation_date"] == latest_date]["code"]
         )
@@ -845,6 +862,8 @@ if __name__ == "__main__":
         )
 
     elif args.command == "combine":
+        if args.sql and args.mode == "test":
+            print("警告: --sql 配合 --mode test 将写入 combine_score_test 表")
         results = run_combine_history(
             index_list=args.index,
             start_date=args.start,

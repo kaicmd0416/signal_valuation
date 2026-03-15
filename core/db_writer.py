@@ -5,6 +5,7 @@
 使用 DELETE + INSERT 方式写入 MySQL。
 """
 
+import re
 import yaml
 import pandas as pd
 import numpy as np
@@ -114,6 +115,8 @@ def save_combine_score(df: pd.DataFrame, mode: str = "prod"):
     cfg = _load_db_saving_config(task_name)
     db_url = cfg["db_url"]
     table_name = cfg["table_name"].lower()
+    if not re.match(r"^[a-z_][a-z0-9_]*$", table_name):
+        raise ValueError(f"非法表名: {table_name}")
     schema = cfg["schema"]
     private_keys = cfg["private_keys"]
     chunk_size = cfg.get("chunk_size", 20000)
@@ -130,7 +133,7 @@ def save_combine_score(df: pd.DataFrame, mode: str = "prod"):
     # 标准化
     df_write = _standardize_df(df_write, schema)
 
-    score_name = df_write["score_name"].iloc[0]
+    score_names = df_write["score_name"].unique().tolist()
 
     # 创建引擎
     engine = create_engine(
@@ -142,30 +145,39 @@ def save_combine_score(df: pd.DataFrame, mode: str = "prod"):
         # 确保表存在
         _ensure_table(engine, table_name, schema, private_keys)
 
-        # 先删除该 score_name 对应日期的旧数据
+        # 在同一个事务中完成 DELETE + INSERT，避免数据丢失
         val_list = df_write["valuation_date"].unique().tolist()
-        if val_list:
-            with engine.connect() as conn:
-                delete_sql = text(
-                    f"DELETE FROM {table_name} "
-                    f"WHERE score_name = :sname "
-                    f"AND valuation_date IN :val_list"
-                ).bindparams(bindparam("val_list", expanding=True))
-                conn.execute(delete_sql, {
-                    "sname": score_name,
-                    "val_list": val_list,
-                })
-                conn.commit()
-                print(f"  已删除 {score_name} 旧数据: {len(val_list)}天")
+        with engine.connect() as conn:
+            trans = conn.begin()
+            try:
+                # 先删除对应 score_name + 日期的旧数据
+                if val_list:
+                    for sname in score_names:
+                        delete_sql = text(
+                            f"DELETE FROM {table_name} "
+                            f"WHERE score_name = :sname "
+                            f"AND valuation_date IN :val_list"
+                        ).bindparams(bindparam("val_list", expanding=True))
+                        conn.execute(delete_sql, {
+                            "sname": sname,
+                            "val_list": val_list,
+                        })
+                        print(f"  已删除 {sname} 旧数据: {len(val_list)}天")
 
-        # INSERT 新数据
-        df_write.to_sql(
-            name=table_name,
-            con=engine,
-            if_exists="append",
-            index=False,
-            chunksize=chunk_size,
-        )
-        print(f"  已入库 {score_name}: {len(df_write)}行")
+                # INSERT 新数据
+                df_write.to_sql(
+                    name=table_name,
+                    con=conn,
+                    if_exists="append",
+                    index=False,
+                    chunksize=chunk_size,
+                )
+                trans.commit()
+                sname_str = ", ".join(score_names)
+                print(f"  已入库 {sname_str}: {len(df_write)}行")
+            except Exception:
+                trans.rollback()
+                print(f"  入库失败，已回滚: {', '.join(score_names)}")
+                raise
     finally:
         engine.dispose()
